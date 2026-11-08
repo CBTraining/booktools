@@ -66,14 +66,8 @@ public class MainActivity extends Activity {
 
         ImageView appIcon = new ImageView(this);
         appIcon.setImageResource(R.drawable.ic_drop_arrow);
-        int iconPad = dpToPx(7f);
-        appIcon.setPadding(iconPad, iconPad, iconPad, iconPad);
-        GradientDrawable iconBg = new GradientDrawable();
-        iconBg.setShape(GradientDrawable.OVAL);
-        iconBg.setColor(Color.parseColor("#18191B"));
-        appIcon.setBackground(iconBg);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(36f), dpToPx(36f));
-        iconLp.rightMargin = dpToPx(12f);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(34f), dpToPx(34f));
+        iconLp.rightMargin = dpToPx(10f);
         titleRow.addView(appIcon, iconLp);
 
         LinearLayout titleTextCol = new LinearLayout(this);

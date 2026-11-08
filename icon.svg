@@ -1,14 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="512" height="512" fill="none">
-  <!-- Clean monochromatic rounded downward arrow with detached top accent & soft drop curve -->
+  <defs>
+    <!-- 45-degree gradient: clean lime green (#A3E635) fading to teal (#0D9488) -->
+    <linearGradient id="limeToTeal45" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#A3E635" />
+      <stop offset="50%" stop-color="#2DD4BF" />
+      <stop offset="100%" stop-color="#0D9488" />
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded downward arrow with detached top accent -->
   <path
     d="M12 3.75V4.75M12 8.25V16.75M7.75 12.75L12 17L16.25 12.75"
-    stroke="#FFFFFF"
+    stroke="url(#limeToTeal45)"
     stroke-width="2.4"
     stroke-linecap="round"
     stroke-linejoin="round" />
+
+  <!-- Soft curved landing line beneath the arrow -->
   <path
     d="M6.75 20C9.25 21 14.75 21 17.25 20"
-    stroke="#FFFFFF"
+    stroke="url(#limeToTeal45)"
     stroke-width="2.2"
     stroke-linecap="round" />
 </svg>
