@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -48,10 +49,32 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         current = this;
+        buildThemedContentView();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        buildThemedContentView();
+    }
+
+    private boolean isDarkMode() {
+        int nightMask = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return nightMask == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private void buildThemedContentView() {
+        boolean dark = isDarkMode();
+
+        int bgWindow = dark ? Color.parseColor("#121316") : Color.parseColor("#F1F3F4");
+        int textPrimary = dark ? Color.parseColor("#F1F3F4") : Color.parseColor("#202124");
+        int textSecondary = dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368");
+        int dividerColor = dark ? Color.parseColor("#2D3036") : Color.parseColor("#E8EAED");
+        int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
-        scrollView.setBackgroundColor(Color.parseColor("#F1F3F4"));
+        scrollView.setBackgroundColor(bgWindow);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -59,14 +82,14 @@ public class MainActivity extends Activity {
         root.setPadding(pad, dpToPx(18f), pad, pad);
         scrollView.addView(root);
 
-        // --- Header Row with 45-Degree Lime-to-Teal Gradient Arrow Icon ---
+        // --- Header Row with 45-Degree Lime-to-Teal Open Book + Wrench Icon ---
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView appIcon = new ImageView(this);
         appIcon.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(36f), dpToPx(36f));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f));
         iconLp.rightMargin = dpToPx(12f);
         titleRow.addView(appIcon, iconLp);
 
@@ -74,16 +97,16 @@ public class MainActivity extends Activity {
         titleTextCol.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("ClipDrop");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
+        title.setText("BookTools");
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.parseColor("#202124"));
+        title.setTextColor(textPrimary);
         titleTextCol.addView(title);
 
         TextView subtitle = new TextView(this);
         subtitle.setText("Instant Clipboard Image-to-PNG Converter & Screen HEX Color Picker");
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        subtitle.setTextColor(Color.parseColor("#5F6368"));
+        subtitle.setTextColor(textSecondary);
         titleTextCol.addView(subtitle);
 
         titleRow.addView(titleTextCol);
@@ -102,20 +125,21 @@ public class MainActivity extends Activity {
         root.addView(statusBanner, bannerLp);
 
         // --- Card 1: Streamlined 2-Step Setup (including "Allow restricted settings") ---
-        setupCard = buildCardContainer();
+        setupCard = buildCardContainer(dark);
         LinearLayout setupLayout = (LinearLayout) setupCard;
 
         TextView setupHeader = new TextView(this);
         setupHeader.setText("Quick 2-Step Setup");
         setupHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         setupHeader.setTypeface(Typeface.DEFAULT_BOLD);
-        setupHeader.setTextColor(Color.parseColor("#202124"));
+        setupHeader.setTextColor(textPrimary);
         setupLayout.addView(setupHeader);
 
         setupLayout.addView(buildStepRow(
+                dark,
                 "1",
                 "Allow Restricted Settings",
-                "Tap 'Open App Info (⋮)', click the ⋮ (three dots) in the top-right corner of the system page, and choose 'Allow restricted settings'. (If ⋮ isn't shown yet, click ClipDrop once inside Accessibility Settings first.)",
+                "Tap 'Open App Info (⋮)', click the ⋮ (three dots) in the top-right corner of the system page, and choose 'Allow restricted settings'. (If ⋮ isn't shown yet, click BookTools once inside Accessibility Settings first.)",
                 "1. Open App Info (⋮)",
                 new View.OnClickListener() {
                     @Override
@@ -126,7 +150,7 @@ public class MainActivity extends Activity {
         ));
 
         View divider = new View(this);
-        divider.setBackgroundColor(Color.parseColor("#E8EAED"));
+        divider.setBackgroundColor(dividerColor);
         LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(1f));
         divLp.topMargin = dpToPx(10f);
@@ -134,9 +158,10 @@ public class MainActivity extends Activity {
         setupLayout.addView(divider, divLp);
 
         setupLayout.addView(buildStepRow(
+                dark,
                 "2",
-                "Enable Shortcut Service",
-                "Tap 'Open Accessibility', select 'ClipDrop Shortcuts', and switch it ON. (If updating from an older version, toggle it OFF and back ON once to refresh permissions.)",
+                "Enable BookTools Shortcut Service",
+                "Tap 'Open Accessibility', select 'BookTools Shortcuts', and switch it ON. (If updating from an older version, toggle it OFF and back ON once to refresh permissions.)",
                 "2. Open Accessibility",
                 new View.OnClickListener() {
                     @Override
@@ -154,22 +179,24 @@ public class MainActivity extends Activity {
         root.addView(setupCard, cardLp1);
 
         // --- Card 2: Keyboard Shortcuts Reference ---
-        LinearLayout shortcutsCard = buildCardContainer();
+        LinearLayout shortcutsCard = buildCardContainer(dark);
 
         TextView shortcutsHeader = new TextView(this);
         shortcutsHeader.setText("What You Can Do");
         shortcutsHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         shortcutsHeader.setTypeface(Typeface.DEFAULT_BOLD);
-        shortcutsHeader.setTextColor(Color.parseColor("#202124"));
+        shortcutsHeader.setTextColor(textPrimary);
         shortcutsCard.addView(shortcutsHeader);
 
         shortcutsCard.addView(buildShortcutItem(
+                dark,
                 "Ctrl + Shift + D",
                 "Clipboard Image → PNG Download & Drag Popup",
                 "Converts any copied image (WebP, JPEG, PNG, etc.) into a lossless .png file in Downloads and opens an animated popup card. Click & drag the PNG directly into any app, or swipe / right-click to dismiss."
         ));
 
         shortcutsCard.addView(buildShortcutItem(
+                dark,
                 "Ctrl + Shift + C",
                 "Screen Color Picker (#HEX to Clipboard)",
                 "Opens a precision crosshair with a live magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
@@ -183,13 +210,13 @@ public class MainActivity extends Activity {
         root.addView(shortcutsCard, cardLp2);
 
         // --- Card 3: Built-in Test Bar ---
-        LinearLayout testCard = buildCardContainer();
+        LinearLayout testCard = buildCardContainer(dark);
 
         TextView testHeader = new TextView(this);
         testHeader.setText("Test Tools");
         testHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         testHeader.setTypeface(Typeface.DEFAULT_BOLD);
-        testHeader.setTextColor(Color.parseColor("#202124"));
+        testHeader.setTextColor(textPrimary);
         testCard.addView(testHeader);
 
         LinearLayout testRow = new LinearLayout(this);
@@ -200,7 +227,7 @@ public class MainActivity extends Activity {
         );
         testLp.topMargin = dpToPx(8f);
 
-        Button copyWebpBtn = createActionButton("Copy Sample WebP", false);
+        Button copyWebpBtn = createActionButton(dark, "Copy Sample WebP", false);
         copyWebpBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -209,7 +236,7 @@ public class MainActivity extends Activity {
         });
         testRow.addView(copyWebpBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button triggerPngBtn = createActionButton("Test PNG (Ctrl+Shift+D)", true);
+        Button triggerPngBtn = createActionButton(dark, "Test PNG (Ctrl+Shift+D)", true);
         triggerPngBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -224,7 +251,7 @@ public class MainActivity extends Activity {
         btnLp2.leftMargin = dpToPx(8f);
         testRow.addView(triggerPngBtn, btnLp2);
 
-        Button triggerColorBtn = createActionButton("Test Color (Ctrl+Shift+C)", true);
+        Button triggerColorBtn = createActionButton(dark, "Test Color (Ctrl+Shift+C)", true);
         triggerColorBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -243,7 +270,7 @@ public class MainActivity extends Activity {
 
         lastActionView = new TextView(this);
         lastActionView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        lastActionView.setTextColor(Color.parseColor("#0D9488"));
+        lastActionView.setTextColor(accentTeal);
         lastActionView.setPadding(0, dpToPx(10f), 0, 0);
         testCard.addView(lastActionView);
 
@@ -258,10 +285,6 @@ public class MainActivity extends Activity {
         refreshUiState();
     }
 
-    /**
-     * Captures the current Activity window into a software Bitmap as a fallback if the user hasn't
-     * toggled the Accessibility Service off/on yet after updating.
-     */
     public Bitmap captureActivityWindowBitmap() {
         try {
             View root = getWindow().getDecorView().getRootView();
@@ -276,20 +299,20 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private LinearLayout buildCardContainer() {
+    private LinearLayout buildCardContainer(boolean dark) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         int pad = dpToPx(16f);
         card.setPadding(pad, dpToPx(14f), pad, dpToPx(14f));
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(14f));
-        bg.setColor(Color.WHITE);
-        bg.setStroke(dpToPx(1f), Color.parseColor("#DADCE0"));
+        bg.setColor(dark ? Color.parseColor("#1E2024") : Color.WHITE);
+        bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#34373D") : Color.parseColor("#DADCE0"));
         card.setBackground(bg);
         return card;
     }
 
-    private View buildStepRow(String stepNumber, String titleText, String bodyText, String buttonLabel, View.OnClickListener onClick) {
+    private View buildStepRow(boolean dark, String stepNumber, String titleText, String bodyText, String buttonLabel, View.OnClickListener onClick) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -297,13 +320,13 @@ public class MainActivity extends Activity {
 
         TextView badge = new TextView(this);
         badge.setText(stepNumber);
-        badge.setTextColor(Color.WHITE);
+        badge.setTextColor(dark ? Color.parseColor("#121316") : Color.WHITE);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
         badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         badge.setGravity(Gravity.CENTER);
         GradientDrawable badgeBg = new GradientDrawable();
         badgeBg.setShape(GradientDrawable.OVAL);
-        badgeBg.setColor(Color.parseColor("#0D9488"));
+        badgeBg.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
         badge.setBackground(badgeBg);
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dpToPx(26f), dpToPx(26f));
         badgeLp.rightMargin = dpToPx(12f);
@@ -314,14 +337,14 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(titleText);
-        t.setTextColor(Color.parseColor("#202124"));
+        t.setTextColor(dark ? Color.parseColor("#F1F3F4") : Color.parseColor("#202124"));
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
         textCol.addView(t);
 
         TextView b = new TextView(this);
         b.setText(bodyText);
-        b.setTextColor(Color.parseColor("#5F6368"));
+        b.setTextColor(dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368"));
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         b.setPadding(0, dpToPx(2f), 0, 0);
         textCol.addView(b);
@@ -330,7 +353,7 @@ public class MainActivity extends Activity {
         colLp.rightMargin = dpToPx(12f);
         row.addView(textCol, colLp);
 
-        Button btn = createActionButton(buttonLabel, false);
+        Button btn = createActionButton(dark, buttonLabel, false);
         btn.setOnClickListener(onClick);
         row.addView(btn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -340,7 +363,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    private View buildShortcutItem(String keys, String titleText, String descText) {
+    private View buildShortcutItem(boolean dark, String keys, String titleText, String descText) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.TOP);
@@ -348,14 +371,14 @@ public class MainActivity extends Activity {
 
         TextView keyBadge = new TextView(this);
         keyBadge.setText(keys);
-        keyBadge.setTextColor(Color.parseColor("#0D9488"));
+        keyBadge.setTextColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
         keyBadge.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         keyBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         keyBadge.setPadding(dpToPx(10f), dpToPx(6f), dpToPx(10f), dpToPx(6f));
         GradientDrawable keyBg = new GradientDrawable();
         keyBg.setCornerRadius(dpToPx(8f));
-        keyBg.setColor(Color.parseColor("#F0FDFA"));
-        keyBg.setStroke(dpToPx(1f), Color.parseColor("#99F6E4"));
+        keyBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#F0FDFA"));
+        keyBg.setStroke(dpToPx(1f), dark ? Color.parseColor("#0D9488") : Color.parseColor("#99F6E4"));
         keyBadge.setBackground(keyBg);
 
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(
@@ -370,14 +393,14 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(titleText);
-        t.setTextColor(Color.parseColor("#202124"));
+        t.setTextColor(dark ? Color.parseColor("#F1F3F4") : Color.parseColor("#202124"));
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
         col.addView(t);
 
         TextView d = new TextView(this);
         d.setText(descText);
-        d.setTextColor(Color.parseColor("#5F6368"));
+        d.setTextColor(dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368"));
         d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         d.setPadding(0, dpToPx(2f), 0, 0);
         col.addView(d);
@@ -386,7 +409,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    private Button createActionButton(String text, boolean primary) {
+    private Button createActionButton(boolean dark, String text, boolean primary) {
         Button btn = new Button(this);
         btn.setAllCaps(false);
         btn.setText(text);
@@ -399,12 +422,12 @@ public class MainActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(10f));
         if (primary) {
-            bg.setColor(Color.parseColor("#0D9488"));
-            btn.setTextColor(Color.WHITE);
+            bg.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
+            btn.setTextColor(dark ? Color.parseColor("#121316") : Color.WHITE);
         } else {
-            bg.setColor(Color.parseColor("#F1F3F4"));
-            bg.setStroke(dpToPx(1f), Color.parseColor("#BDC1C6"));
-            btn.setTextColor(Color.parseColor("#202124"));
+            bg.setColor(dark ? Color.parseColor("#282A2E") : Color.parseColor("#F1F3F4"));
+            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#44474E") : Color.parseColor("#BDC1C6"));
+            btn.setTextColor(dark ? Color.parseColor("#E8EAED") : Color.parseColor("#202124"));
         }
         btn.setBackground(bg);
         return btn;
@@ -452,18 +475,20 @@ public class MainActivity extends Activity {
     }
 
     public void refreshUiState() {
+        if (statusBanner == null || lastActionView == null) return;
         boolean active = isAccessibilityServiceEnabled();
+        boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(12f));
         if (active) {
-            bg.setColor(Color.parseColor("#E6F4EA"));
-            bg.setStroke(dpToPx(1f), Color.parseColor("#CEEAD6"));
-            statusBanner.setTextColor(Color.parseColor("#137333"));
+            bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
+            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
+            statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
             statusBanner.setText("✓ SERVICE ACTIVE — Press Ctrl + Shift + D (Clipboard PNG) or Ctrl + Shift + C (Color Picker) anytime.");
         } else {
-            bg.setColor(Color.parseColor("#FCE8E6"));
-            bg.setStroke(dpToPx(1f), Color.parseColor("#FAD2CF"));
-            statusBanner.setTextColor(Color.parseColor("#C5221F"));
+            bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
+            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));
+            statusBanner.setTextColor(dark ? Color.parseColor("#F28B82") : Color.parseColor("#C5221F"));
             statusBanner.setText("⚠ SERVICE INACTIVE — Follow Steps 1 & 2 below to enable global shortcuts.");
         }
         statusBanner.setBackground(bg);
@@ -491,7 +516,7 @@ public class MainActivity extends Activity {
                     textPaint.setColor(Color.WHITE);
                     textPaint.setTypeface(Typeface.DEFAULT_BOLD);
                     textPaint.setTextSize(34f);
-                    canvas.drawText("WebP → PNG Test", 95f, 130f, textPaint);
+                    canvas.drawText("BookTools WebP Test", 75f, 130f, textPaint);
                     textPaint.setTextSize(22f);
                     canvas.drawText("Press Ctrl + Shift + D!", 125f, 175f, textPaint);
 

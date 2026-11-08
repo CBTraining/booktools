@@ -9,6 +9,7 @@ import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -48,7 +49,6 @@ import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.animation.AccelerateInterpolator;
-import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -65,13 +65,14 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Global keyboard shortcut service for ClipDrop:
+ * Global keyboard shortcut service for BookTools:
  *  - Ctrl + Shift + D: Reads clipboard image (WebP, JPEG, PNG, GIF, BMP, data URI),
  *    saves it as a lossless .png in Downloads, and opens an animated popup card where
  *    you can click-and-drag the PNG into any app, or dismiss by swiping or right-clicking.
  *  - Ctrl + Shift + C: Captures the screen and opens an interactive Crosshair + Zoom
  *    Magnifier Loupe (which flips automatically between top and bottom if near screen edges)
  *    so clicking copies the pointed pixel's #RRGGBB HEX code to the clipboard.
+ *  - Automatically adapts overlays to Device Dark Mode / Light Mode settings.
  */
 public class TopBarDropService extends AccessibilityService {
 
@@ -128,6 +129,11 @@ public class TopBarDropService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+    }
+
+    private boolean isDarkMode() {
+        int nightMask = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return nightMask == Configuration.UI_MODE_NIGHT_YES;
     }
 
     @Override
@@ -268,6 +274,15 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void buildAndShowPopupWindow() {
+        boolean dark = isDarkMode();
+        int surfaceColor = dark ? Color.parseColor("#202124") : Color.parseColor("#FFFFFF");
+        int borderColor = dark ? Color.parseColor("#5F6368") : Color.parseColor("#DADCE0");
+        int textPrimary = dark ? Color.WHITE : Color.parseColor("#202124");
+        int textSecondary = dark ? Color.parseColor("#BDC1C6") : Color.parseColor("#5F6368");
+        int textMuted = dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#80868B");
+        int boxSurface = dark ? Color.parseColor("#303134") : Color.parseColor("#F1F3F4");
+        int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
+
         popupRoot = new PopupRootView(this);
         int outerPad = dpToPx(10f);
         popupRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
@@ -282,8 +297,8 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable cardBg = new GradientDrawable();
         cardBg.setShape(GradientDrawable.RECTANGLE);
         cardBg.setCornerRadius(dpToPx(20f));
-        cardBg.setColor(Color.parseColor("#202124"));
-        cardBg.setStroke(dpToPx(1.5f), Color.parseColor("#5F6368"));
+        cardBg.setColor(surfaceColor);
+        cardBg.setStroke(dpToPx(1.5f), borderColor);
         popupCard.setBackground(cardBg);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             popupCard.setElevation(dpToPx(8f));
@@ -301,14 +316,14 @@ public class TopBarDropService extends AccessibilityService {
 
         headerTitleView = new TextView(this);
         headerTitleView.setText("Reading clipboard image...");
-        headerTitleView.setTextColor(Color.WHITE);
+        headerTitleView.setTextColor(textPrimary);
         headerTitleView.setTypeface(Typeface.DEFAULT_BOLD);
         headerTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         headerRow.addView(headerTitleView, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView closeBtn = new TextView(this);
         closeBtn.setText("✕");
-        closeBtn.setTextColor(Color.parseColor("#9AA0A6"));
+        closeBtn.setTextColor(textMuted);
         closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
         closeBtn.setPadding(dpToPx(8f), dpToPx(2f), dpToPx(4f), dpToPx(2f));
         closeBtn.setOnClickListener(new View.OnClickListener() {
@@ -322,7 +337,7 @@ public class TopBarDropService extends AccessibilityService {
 
         subtitleView = new TextView(this);
         subtitleView.setText("Converting clipboard image to PNG in Downloads...");
-        subtitleView.setTextColor(Color.parseColor("#BDC1C6"));
+        subtitleView.setTextColor(textSecondary);
         subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         subtitleView.setPadding(0, dpToPx(4f), 0, dpToPx(10f));
         popupCard.addView(subtitleView);
@@ -335,8 +350,8 @@ public class TopBarDropService extends AccessibilityService {
 
         GradientDrawable boxBg = new GradientDrawable();
         boxBg.setCornerRadius(dpToPx(14f));
-        boxBg.setColor(Color.parseColor("#303134"));
-        boxBg.setStroke(dpToPx(1.5f), Color.parseColor("#2DD4BF"));
+        boxBg.setColor(boxSurface);
+        boxBg.setStroke(dpToPx(1.5f), accentTeal);
         dragBox.setBackground(boxBg);
 
         previewImageView = new ImageView(this);
@@ -351,7 +366,7 @@ public class TopBarDropService extends AccessibilityService {
 
         dragHintView = new TextView(this);
         dragHintView.setText("⬇ Click & Drag this PNG into any app");
-        dragHintView.setTextColor(Color.parseColor("#2DD4BF"));
+        dragHintView.setTextColor(accentTeal);
         dragHintView.setTypeface(Typeface.DEFAULT_BOLD);
         dragHintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         dragHintView.setGravity(Gravity.CENTER);
@@ -366,7 +381,7 @@ public class TopBarDropService extends AccessibilityService {
 
         TextView footerHint = new TextView(this);
         footerHint.setText("Swipe header/footer or Right-click anywhere to dismiss");
-        footerHint.setTextColor(Color.parseColor("#9AA0A6"));
+        footerHint.setTextColor(textMuted);
         footerHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
         footerHint.setGravity(Gravity.CENTER);
         footerHint.setPadding(0, dpToPx(10f), 0, 0);
@@ -418,7 +433,7 @@ public class TopBarDropService extends AccessibilityService {
         popupParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        popupParams.setTitle("ClipDrop PNG Popup");
+        popupParams.setTitle("BookTools PNG Popup");
 
         popupCard.setPivotX(dpToPx(260f));
         popupCard.setPivotY(dpToPx(20f));
@@ -899,14 +914,12 @@ public class TopBarDropService extends AccessibilityService {
 
         colorPickerCaptureInFlight = true;
 
-        // Safety watchdog: if the OS screenshot callback doesn't return within 220ms for any reason,
-        // still open the Color Picker overlay so Ctrl+Shift+C never fails silently!
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 if (colorPickerCaptureInFlight && !colorPickerShown) {
                     colorPickerCaptureInFlight = false;
-                    openColorPickerWithFallback("Toggle ClipDrop OFF & ON once in Accessibility Settings to refresh screen capture");
+                    openColorPickerWithFallback("Toggle BookTools OFF & ON once in Accessibility Settings to refresh screen capture");
                 }
             }
         }, 220);
@@ -961,7 +974,7 @@ public class TopBarDropService extends AccessibilityService {
                             colorPickerCaptureInFlight = false;
                             String hint = (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS
                                     || errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
-                                    ? "Tip: Toggle ClipDrop OFF & ON once in Accessibility Settings to enable full-screen pixel capture"
+                                    ? "Tip: Toggle BookTools OFF & ON once in Accessibility Settings to enable full-screen pixel capture"
                                     : null;
                             openColorPickerWithFallback(hint);
                         }
@@ -969,7 +982,7 @@ public class TopBarDropService extends AccessibilityService {
             );
         } catch (Throwable t) {
             colorPickerCaptureInFlight = false;
-            openColorPickerWithFallback("Tip: Toggle ClipDrop OFF & ON once in Accessibility Settings to enable full-screen pixel capture");
+            openColorPickerWithFallback("Tip: Toggle BookTools OFF & ON once in Accessibility Settings to enable full-screen pixel capture");
         }
     }
 
@@ -1015,7 +1028,7 @@ public class TopBarDropService extends AccessibilityService {
         dismissColorPicker(false);
 
         colorPickerRoot = new ColorPickerRootView(this);
-        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, bannerHint);
+        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, bannerHint, isDarkMode());
         colorPickerRoot.addView(colorPickerCanvas, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -1030,7 +1043,7 @@ public class TopBarDropService extends AccessibilityService {
         colorPickerParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        colorPickerParams.setTitle("ClipDrop Color Picker");
+        colorPickerParams.setTitle("BookTools Color Picker");
 
         try {
             windowManager.addView(colorPickerRoot, colorPickerParams);
@@ -1136,14 +1149,6 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    /**
-     * Full-screen interactive Crosshair + Magnifier Loupe view.
-     * - Displays the captured screen snapshot so pixels stay still while inspecting.
-     * - Tracks mouse hover (ACTION_HOVER_MOVE) and touch/drag (ACTION_MOVE).
-     * - Renders a magnified 11x11 pixel grid + #RRGGBB HEX pill ON TOP OF the crosshair,
-     *   and automatically flips it BELOW the crosshair if the top zoom preview would go out of view!
-     * - Clicking copies the pointed #RRGGBB HEX code to the clipboard and shows a sleek confirmation badge.
-     */
     private class ColorPickerCanvasView extends View {
         private final Bitmap screenBmp;
         private final String bannerHint;
@@ -1170,7 +1175,7 @@ public class TopBarDropService extends AccessibilityService {
         private final RectF tempRect = new RectF();
         private final Path clipPath = new Path();
 
-        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, String hint) {
+        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, String hint, boolean dark) {
             super(context);
             this.screenBmp = bitmap;
             this.bannerHint = hint;
@@ -1184,23 +1189,23 @@ public class TopBarDropService extends AccessibilityService {
             gridLinePaint.setColor(0x28FFFFFF);
 
             cardPaint.setStyle(Paint.Style.FILL);
-            cardPaint.setColor(Color.parseColor("#202124"));
+            cardPaint.setColor(dark ? Color.parseColor("#202124") : Color.parseColor("#FFFFFF"));
 
             cardStrokePaint.setStyle(Paint.Style.STROKE);
             cardStrokePaint.setStrokeWidth(dpToPx(1.8f));
-            cardStrokePaint.setColor(Color.parseColor("#2DD4BF"));
+            cardStrokePaint.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
 
-            textPaint.setColor(Color.WHITE);
+            textPaint.setColor(dark ? Color.WHITE : Color.parseColor("#202124"));
             textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
             textPaint.setTextSize(TypedValue.applyDimension(
                     TypedValue.COMPLEX_UNIT_SP, 14f, getResources().getDisplayMetrics()));
 
-            subTextPaint.setColor(Color.parseColor("#BDC1C6"));
+            subTextPaint.setColor(dark ? Color.parseColor("#BDC1C6") : Color.parseColor("#5F6368"));
             subTextPaint.setTypeface(Typeface.DEFAULT);
             subTextPaint.setTextSize(TypedValue.applyDimension(
                     TypedValue.COMPLEX_UNIT_SP, 11f, getResources().getDisplayMetrics()));
 
-            bannerTextPaint.setColor(Color.WHITE);
+            bannerTextPaint.setColor(dark ? Color.WHITE : Color.parseColor("#202124"));
             bannerTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
             bannerTextPaint.setTextAlign(Paint.Align.CENTER);
             bannerTextPaint.setTextSize(TypedValue.applyDimension(
@@ -1311,7 +1316,7 @@ public class TopBarDropService extends AccessibilityService {
 
             float scale = 0.72f + 0.28f * animProgress;
 
-            // 1. Draw top instruction pill so user immediately sees the Color Picker is active
+            // 1. Draw top instruction pill
             String topMsg = (bannerHint != null && !bannerHint.isEmpty())
                     ? bannerHint
                     : "Color Picker — Move cursor & click to copy " + hex + " · Right-click or Esc to cancel";
@@ -1419,7 +1424,7 @@ public class TopBarDropService extends AccessibilityService {
             pixelPaint.setColor(centerColor);
             pixelPaint.setAntiAlias(true);
             canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), pixelPaint);
-            canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), crosshairLightPaint);
+            canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), cardStrokePaint);
 
             float textLeft = swatchLeft + swatchSize + dpToPx(8f);
             canvas.drawText(hex, textLeft, swatchTop + dpToPx(13f), textPaint);
@@ -1496,6 +1501,7 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void showCopiedColorBadge(int color, String hex) {
+        boolean dark = isDarkMode();
         final FrameLayout badgeRoot = new FrameLayout(this);
         int outerPad = dpToPx(8f);
         badgeRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
@@ -1507,15 +1513,15 @@ public class TopBarDropService extends AccessibilityService {
 
         GradientDrawable pillBg = new GradientDrawable();
         pillBg.setCornerRadius(dpToPx(24f));
-        pillBg.setColor(Color.parseColor("#202124"));
-        pillBg.setStroke(dpToPx(1.5f), Color.parseColor("#2DD4BF"));
+        pillBg.setColor(dark ? Color.parseColor("#202124") : Color.WHITE);
+        pillBg.setStroke(dpToPx(1.5f), dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
         pill.setBackground(pillBg);
 
         View swatch = new View(this);
         GradientDrawable swatchBg = new GradientDrawable();
         swatchBg.setShape(GradientDrawable.OVAL);
         swatchBg.setColor(color);
-        swatchBg.setStroke(dpToPx(1.5f), Color.WHITE);
+        swatchBg.setStroke(dpToPx(1.5f), dark ? Color.WHITE : Color.parseColor("#202124"));
         swatch.setBackground(swatchBg);
         LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(dpToPx(20f), dpToPx(20f));
         swatchLp.rightMargin = dpToPx(10f);
@@ -1523,7 +1529,7 @@ public class TopBarDropService extends AccessibilityService {
 
         TextView label = new TextView(this);
         label.setText("Copied " + hex + " to clipboard");
-        label.setTextColor(Color.WHITE);
+        label.setTextColor(dark ? Color.WHITE : Color.parseColor("#202124"));
         label.setTypeface(Typeface.DEFAULT_BOLD);
         label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         pill.addView(label);

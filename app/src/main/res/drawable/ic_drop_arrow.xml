@@ -6,39 +6,40 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
 
-    <!-- Detached top accent dot + main vertical shaft + rounded downward chevron (45-deg lime-to-teal gradient, no background) -->
+    <!-- Rounded Open Book (left page, spine, and right page) with 45-deg lime-to-teal gradient -->
     <path
         android:fillColor="#00000000"
-        android:pathData="M12,3.75L12,4.75M12,8.25L12,16.75M7.75,12.75L12,17L16.25,12.75"
-        android:strokeWidth="2.4"
+        android:pathData="M12,20C9.3,18.2 5.8,17.8 3,18.5L3,7.5C5.8,6.8 9.2,7.2 11.5,8.8M12,11.5L12,20M12,20C14.7,18.2 18.2,17.8 21,18.5L21,13.2"
+        android:strokeWidth="2.2"
         android:strokeLineCap="round"
         android:strokeLineJoin="round">
         <aapt:attr name="android:strokeColor">
             <gradient
                 android:type="linear"
-                android:startX="4"
-                android:startY="4"
-                android:endX="20"
-                android:endY="20"
+                android:startX="3"
+                android:startY="3"
+                android:endX="21"
+                android:endY="21"
                 android:startColor="#FFA3E635"
                 android:centerColor="#FF2DD4BF"
                 android:endColor="#FF0D9488" />
         </aapt:attr>
     </path>
 
-    <!-- Subtle rounded landing curve beneath the arrow (45-deg lime-to-teal gradient) -->
+    <!-- Rounded Wrench (upper-right open jaw + angled handle) with 45-deg lime-to-teal gradient -->
     <path
         android:fillColor="#00000000"
-        android:pathData="M6.75,20C9.25,21 14.75,21 17.25,20"
+        android:pathData="M14.8,9.2L10.8,13.2M17.2,3.2C15.3,3.6 14.1,5.5 14.7,7.4L16.6,9.3C18.5,9.9 20.4,8.7 20.8,6.8L18.7,8.9L16.9,7.1L19,5C18.5,4 17.9,3.4 17.2,3.2Z"
         android:strokeWidth="2.2"
-        android:strokeLineCap="round">
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
         <aapt:attr name="android:strokeColor">
             <gradient
                 android:type="linear"
-                android:startX="4"
-                android:startY="4"
-                android:endX="20"
-                android:endY="20"
+                android:startX="3"
+                android:startY="3"
+                android:endX="21"
+                android:endY="21"
                 android:startColor="#FFA3E635"
                 android:centerColor="#FF2DD4BF"
                 android:endColor="#FF0D9488" />

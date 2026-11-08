@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ClipDrop</string>
-    <string name="a11y_label">ClipDrop Shortcuts (Ctrl+Shift+D / C)</string>
+    <string name="app_name">BookTools</string>
+    <string name="a11y_label">BookTools Shortcuts (Ctrl+Shift+D / C)</string>
     <string name="a11y_summary">Ctrl+Shift+D saves clipboard images as PNG; Ctrl+Shift+C picks screen color HEX</string>
-    <string name="a11y_description">Provides two global keyboard shortcuts:\n\n• Ctrl + Shift + D: Converts any image on the clipboard (WebP, JPEG, PNG, etc.) into a lossless PNG in Downloads and opens an animated drag-and-drop popup.\n• Ctrl + Shift + C: Opens a precision crosshair and zoom magnifier to click any pixel on screen and copy its #RRGGBB HEX color code to the clipboard.\n\nRuns 100% offline with zero network permissions.</string>
+    <string name="a11y_description">BookTools provides two global keyboard shortcuts:\n\n• Ctrl + Shift + D: Converts any image on the clipboard (WebP, JPEG, PNG, etc.) into a lossless PNG in Downloads and opens an animated drag-and-drop popup.\n• Ctrl + Shift + C: Opens a precision crosshair and zoom magnifier to click any pixel on screen and copy its #RRGGBB HEX color code to the clipboard.\n\nRuns 100% offline with zero network permissions.</string>
 </resources>
