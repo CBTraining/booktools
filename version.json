@@ -1,6 +1,6 @@
 {
-  "version": "1.008",
-  "versionCode": 1008,
+  "version": "1.009",
+  "versionCode": 1009,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.008: Moved compact '✓ Service Active' / '⚠ Setup Needed' badge next to 'Check Update', updated subtitle to 'Productivity and efficiency tools for your Googlebook.', and hardened Android 14-17 in-app update prompt"
+  "notes": "BookTools v1.009: Added PowerToys FancyZones Window Snapper (Hold Shift while dragging any window or press Ctrl+Shift+Z, with Quarters, Half & Half, and Triple Column segment options in Settings)"
 }
