@@ -89,8 +89,8 @@ public class MainActivity extends Activity {
 
         ImageView appIcon = new ImageView(this);
         appIcon.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f));
-        iconLp.rightMargin = dpToPx(12f);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(42f), dpToPx(42f));
+        iconLp.rightMargin = dpToPx(14f);
         titleRow.addView(appIcon, iconLp);
 
         LinearLayout titleTextCol = new LinearLayout(this);
@@ -102,6 +102,14 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(textPrimary);
         titleTextCol.addView(title);
+
+        TextView authorLine = new TextView(this);
+        authorLine.setText("Made by Christopher Gammello");
+        authorLine.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        authorLine.setTypeface(Typeface.DEFAULT_BOLD);
+        authorLine.setTextColor(accentTeal);
+        authorLine.setPadding(0, dpToPx(1f), 0, dpToPx(2f));
+        titleTextCol.addView(authorLine);
 
         TextView subtitle = new TextView(this);
         subtitle.setText("Instant Clipboard Image-to-PNG Converter & Screen HEX Color Picker");
@@ -192,14 +200,14 @@ public class MainActivity extends Activity {
                 dark,
                 "Ctrl + Shift + D",
                 "Clipboard Image → PNG Download & Drag Popup",
-                "Converts any copied image (WebP, JPEG, PNG, etc.) into a lossless .png file in Downloads and opens an animated popup card. Click & drag the PNG directly into any app, or swipe / right-click to dismiss."
+                "Converts any copied image (WebP, JPEG, PNG, etc.) into a lossless .png file in Downloads and opens a frosted glass popup card. Click & drag the PNG directly into any app, or swipe / right-click to dismiss."
         ));
 
         shortcutsCard.addView(buildShortcutItem(
                 dark,
                 "Ctrl + Shift + C",
                 "Screen Color Picker (#HEX to Clipboard)",
-                "Opens a precision crosshair with a live magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
+                "Opens a precision crosshair with a frosted glass magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
         ));
 
         LinearLayout.LayoutParams cardLp2 = new LinearLayout.LayoutParams(
