@@ -18,7 +18,6 @@ import android.graphics.Color;
 import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
 import android.graphics.LinearGradient;
-import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
@@ -47,7 +46,6 @@ import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -70,8 +68,9 @@ import java.util.Locale;
 /**
  * Global keyboard shortcut service for BookTools:
  *  - Ctrl + Shift + D: Reads clipboard image (WebP, JPEG, PNG, GIF, BMP, data URI),
- *    saves it as a lossless .png in Downloads, and opens a frosted blurry glass popup card
- *    where you can click-and-drag the PNG into any app, or dismiss by swiping or right-clicking.
+ *    saves it as a lossless .png in Downloads, and opens a frosted glass popup card
+ *    (without blurring the whole screen!) where you can click-and-drag the PNG into any app,
+ *    or dismiss by swiping or right-clicking.
  *  - Ctrl + Shift + C: Captures the screen and opens an interactive Crosshair + Frosted Glass
  *    Zoom Magnifier Loupe (which flips automatically between top and bottom if near screen edges)
  *    so clicking copies the pointed pixel's #RRGGBB HEX code to the clipboard.
@@ -88,7 +87,7 @@ public class TopBarDropService extends AccessibilityService {
 
     // --- Ctrl + Shift + D (Clipboard PNG Popup) state ---
     private PopupRootView popupRoot;
-    private LinearLayout popupCard;
+    private FrostedGlassCardLayout popupCard;
     private WindowManager.LayoutParams popupParams;
     private boolean popupShown = false;
     private boolean popupDismissing = false;
@@ -112,6 +111,7 @@ public class TopBarDropService extends AccessibilityService {
     private boolean colorPickerDismissing = false;
     private boolean colorPickerCaptureInFlight = false;
     private Bitmap lastCapturedScreenBitmap;
+    private Bitmap lastBlurredScreenBitmap;
     private long lastColorPickerTriggerMs = 0L;
 
     @Override
@@ -225,6 +225,10 @@ public class TopBarDropService extends AccessibilityService {
             lastCapturedScreenBitmap.recycle();
             lastCapturedScreenBitmap = null;
         }
+        if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
+            lastBlurredScreenBitmap.recycle();
+            lastBlurredScreenBitmap = null;
+        }
         instance = null;
         notifyActivityStatus();
         super.onDestroy();
@@ -254,6 +258,92 @@ public class TopBarDropService extends AccessibilityService {
         currentPngUri = null;
         currentPngFileName = null;
 
+        // Capture a background snapshot BEFORE adding the popup so the popup card itself can
+        // render a genuine blurred backdrop of the exact screen patch underneath it without
+        // blurring the rest of the screen!
+        captureBackdropForPopupAndShow();
+    }
+
+    private void captureBackdropForPopupAndShow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            final boolean[] shown = new boolean[]{false};
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!shown[0]) {
+                        shown[0] = true;
+                        openPopupAndProcessClipboard();
+                    }
+                }
+            }, 90);
+
+            int displayId = Display.DEFAULT_DISPLAY;
+            try {
+                if (windowManager != null && windowManager.getDefaultDisplay() != null) {
+                    displayId = windowManager.getDefaultDisplay().getDisplayId();
+                }
+            } catch (Exception ignored) {
+            }
+
+            try {
+                takeScreenshot(
+                        displayId,
+                        getMainExecutor(),
+                        new TakeScreenshotCallback() {
+                            @Override
+                            public void onSuccess(ScreenshotResult screenshot) {
+                                try {
+                                    HardwareBuffer hb = screenshot.getHardwareBuffer();
+                                    ColorSpace cs = screenshot.getColorSpace();
+                                    if (hb != null) {
+                                        Bitmap hw = Bitmap.wrapHardwareBuffer(hb, cs);
+                                        if (hw != null) {
+                                            Bitmap sw = hw.copy(Bitmap.Config.ARGB_8888, false);
+                                            hw.recycle();
+                                            if (sw != null) {
+                                                updateCachedScreenBitmaps(sw);
+                                            }
+                                        }
+                                        hb.close();
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                                if (!shown[0]) {
+                                    shown[0] = true;
+                                    openPopupAndProcessClipboard();
+                                } else if (popupCard != null) {
+                                    popupCard.invalidate();
+                                }
+                            }
+
+                            @Override
+                            public void onFailure(int errorCode) {
+                                if (!shown[0]) {
+                                    shown[0] = true;
+                                    openPopupAndProcessClipboard();
+                                }
+                            }
+                        }
+                );
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        openPopupAndProcessClipboard();
+    }
+
+    private void updateCachedScreenBitmaps(Bitmap swBitmap) {
+        if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
+            lastCapturedScreenBitmap.recycle();
+        }
+        if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
+            lastBlurredScreenBitmap.recycle();
+        }
+        lastCapturedScreenBitmap = swBitmap;
+        lastBlurredScreenBitmap = createBlurredBackdropBitmap(swBitmap);
+    }
+
+    private void openPopupAndProcessClipboard() {
         buildAndShowPopupWindow();
 
         int[] delays = new int[]{0, 60, 150, 300};
@@ -279,72 +369,25 @@ public class TopBarDropService extends AccessibilityService {
 
     private void buildAndShowPopupWindow() {
         boolean dark = isDarkMode();
-        int[] glassGradientColors = dark
-                ? new int[]{Color.parseColor("#BF262934"), Color.parseColor("#AD16181F")}
-                : new int[]{Color.parseColor("#D6FFFFFF"), Color.parseColor("#BFEAF0F6")};
-        int glassBorderColor = dark ? Color.parseColor("#66FFFFFF") : Color.parseColor("#880D9488");
         int textPrimary = dark ? Color.WHITE : Color.parseColor("#181A1F");
         int textSecondary = dark ? Color.parseColor("#D2D6DC") : Color.parseColor("#4A5058");
         int textMuted = dark ? Color.parseColor("#A8B0BA") : Color.parseColor("#68707A");
-        int boxSurface = dark ? Color.parseColor("#6E101216") : Color.parseColor("#88FFFFFF");
+        int boxSurface = dark ? Color.parseColor("#55101216") : Color.parseColor("#77FFFFFF");
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
-        final float cornerRadius = dpToPx(22f);
-
         popupRoot = new PopupRootView(this);
+        int outerPad = dpToPx(10f);
+        popupRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
         popupRoot.setClipChildren(false);
         popupRoot.setClipToPadding(false);
 
-        // Clip the root window outline to the rounded card so SurfaceFlinger's FLAG_BLUR_BEHIND
-        // blurs strictly inside the rounded glass card with zero rectangular halo.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            popupRoot.setOutlineProvider(new ViewOutlineProvider() {
-                @Override
-                public void getOutline(View view, Outline outline) {
-                    if (popupCard != null && popupCard.getWidth() > 0 && popupCard.getHeight() > 0) {
-                        outline.setRoundRect(
-                                popupCard.getLeft(),
-                                popupCard.getTop(),
-                                popupCard.getRight(),
-                                popupCard.getBottom(),
-                                cornerRadius
-                        );
-                    } else {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cornerRadius);
-                    }
-                }
-            });
-            popupRoot.setClipToOutline(true);
-        }
-
-        popupCard = new LinearLayout(this);
+        popupCard = new FrostedGlassCardLayout(this, dark, dpToPx(22f));
         popupCard.setOrientation(LinearLayout.VERTICAL);
         int cardPad = dpToPx(16f);
-        popupCard.setPadding(cardPad, dpToPx(12f), cardPad, cardPad);
-
-        GradientDrawable cardBg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                glassGradientColors
-        );
-        cardBg.setShape(GradientDrawable.RECTANGLE);
-        cardBg.setCornerRadius(cornerRadius);
-        cardBg.setStroke(dpToPx(1.5f), glassBorderColor);
-        popupCard.setBackground(cardBg);
-
-        // Subtle top specular glass reflection highlight bar
-        View glassSheen = new View(this);
-        GradientDrawable sheenBg = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0x00FFFFFF, dark ? 0x55FFFFFF : 0xAAFFFFFF, 0x00FFFFFF}
-        );
-        sheenBg.setCornerRadius(dpToPx(2f));
-        glassSheen.setBackground(sheenBg);
-        LinearLayout.LayoutParams sheenLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(1.5f)
-        );
-        sheenLp.bottomMargin = dpToPx(8f);
-        popupCard.addView(glassSheen, sheenLp);
+        popupCard.setPadding(cardPad, dpToPx(14f), cardPad, cardPad);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            popupCard.setElevation(dpToPx(10f));
+        }
 
         LinearLayout headerRow = new LinearLayout(this);
         headerRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -468,17 +511,15 @@ public class TopBarDropService extends AccessibilityService {
         popupParams.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
         popupParams.format = PixelFormat.TRANSLUCENT;
         popupParams.gravity = Gravity.TOP | Gravity.RIGHT;
-        popupParams.width = dpToPx(316f);
+        popupParams.width = dpToPx(326f);
         popupParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
         popupParams.x = dpToPx(18f);
         popupParams.y = dpToPx(46f);
+        // NOTE: Do NOT set FLAG_BLUR_BEHIND here, because FLAG_BLUR_BEHIND blurs the entire screen!
+        // Instead, FrostedGlassCardLayout blurs ONLY the region inside the popup card itself.
         popupParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                | WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            popupParams.setBlurBehindRadius(dpToPx(32f));
-        }
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
         popupParams.setTitle("BookTools PNG Popup");
 
         popupCard.setPivotX(dpToPx(260f));
@@ -502,6 +543,112 @@ public class TopBarDropService extends AccessibilityService {
         } catch (Exception e) {
             popupShown = false;
             popupDismissing = false;
+        }
+    }
+
+    /**
+     * Custom LinearLayout that renders a genuine frosted blurry glass effect strictly inside
+     * its own rounded card bounds (sampling the blurred screen backdrop at its exact screen
+     * coordinates + translucent glass sheen + specular glass rim), leaving the rest of the
+     * screen 100% sharp and unblurred.
+     */
+    private class FrostedGlassCardLayout extends LinearLayout {
+        private final boolean dark;
+        private final float cornerRadius;
+        private final Path clipPath = new Path();
+        private final RectF cardBounds = new RectF();
+        private final RectF innerBounds = new RectF();
+        private final Rect screenDestRect = new Rect();
+        private final int[] locOnScreen = new int[2];
+
+        private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint outerStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint innerRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        public FrostedGlassCardLayout(android.content.Context context, boolean dark, float cornerRadius) {
+            super(context);
+            this.dark = dark;
+            this.cornerRadius = cornerRadius;
+            setWillNotDraw(false);
+
+            tintPaint.setStyle(Paint.Style.FILL);
+            tintPaint.setColor(dark ? Color.parseColor("#A81A1D26") : Color.parseColor("#B8F2F6FC"));
+
+            outerStrokePaint.setStyle(Paint.Style.STROKE);
+            outerStrokePaint.setStrokeWidth(dpToPx(1.6f));
+            outerStrokePaint.setColor(dark ? Color.parseColor("#882DD4BF") : Color.parseColor("#880D9488"));
+
+            innerRimPaint.setStyle(Paint.Style.STROKE);
+            innerRimPaint.setStrokeWidth(dpToPx(1f));
+            innerRimPaint.setColor(dark ? 0x55FFFFFF : 0xBBFFFFFF);
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            sheenPaint.setShader(new LinearGradient(
+                    0, 0, w, h,
+                    dark
+                            ? new int[]{0x38FFFFFF, 0x08FFFFFF, 0x182DD4BF}
+                            : new int[]{0xAAFFFFFF, 0x22FFFFFF, 0x220D9488},
+                    new float[]{0f, 0.5f, 1f},
+                    Shader.TileMode.CLAMP
+            ));
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) {
+                super.onDraw(canvas);
+                return;
+            }
+
+            cardBounds.set(0, 0, w, h);
+
+            canvas.save();
+            clipPath.reset();
+            clipPath.addRoundRect(cardBounds, cornerRadius, cornerRadius, Path.Direction.CW);
+            canvas.clipPath(clipPath);
+
+            // Draw the blurred desktop patch directly behind this card's exact screen position
+            if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()
+                    && lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
+                getLocationOnScreen(locOnScreen);
+                int screenW = lastCapturedScreenBitmap.getWidth();
+                int screenH = lastCapturedScreenBitmap.getHeight();
+                screenDestRect.set(
+                        -locOnScreen[0],
+                        -locOnScreen[1],
+                        screenW - locOnScreen[0],
+                        screenH - locOnScreen[1]
+                );
+                canvas.drawBitmap(lastBlurredScreenBitmap, null, screenDestRect, bmpPaint);
+            }
+
+            // Frosted glass tint + diagonal glass sheen
+            canvas.drawRect(cardBounds, tintPaint);
+            canvas.drawRect(cardBounds, sheenPaint);
+            canvas.restore();
+
+            // Specular dual glass border
+            float halfStroke = outerStrokePaint.getStrokeWidth() / 2f;
+            innerBounds.set(cardBounds);
+            innerBounds.inset(halfStroke, halfStroke);
+            canvas.drawRoundRect(innerBounds, cornerRadius, cornerRadius, outerStrokePaint);
+
+            innerBounds.inset(dpToPx(1.2f), dpToPx(1.2f));
+            canvas.drawRoundRect(
+                    innerBounds,
+                    Math.max(0f, cornerRadius - dpToPx(1.2f)),
+                    Math.max(0f, cornerRadius - dpToPx(1.2f)),
+                    innerRimPaint
+            );
+
+            super.onDraw(canvas);
         }
     }
 
@@ -834,6 +981,7 @@ public class TopBarDropService extends AccessibilityService {
                     }
                     if (swiping && popupCard != null) {
                         popupCard.setTranslationX(dx);
+                        popupCard.invalidate();
                         float progress = Math.min(1f, Math.abs(dx) / (float) dpToPx(180f));
                         popupCard.setAlpha(Math.max(0.15f, 1f - progress * 0.85f));
                         float scale = 1f - progress * 0.12f;
@@ -1004,10 +1152,7 @@ public class TopBarDropService extends AccessibilityService {
                             }
 
                             if (swBitmap != null) {
-                                if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-                                    lastCapturedScreenBitmap.recycle();
-                                }
-                                lastCapturedScreenBitmap = swBitmap;
+                                updateCachedScreenBitmaps(swBitmap);
                                 showColorPickerOverlay(swBitmap, null);
                             } else {
                                 openColorPickerWithFallback(null);
@@ -1040,11 +1185,13 @@ public class TopBarDropService extends AccessibilityService {
         if (MainActivity.current != null) {
             Bitmap actBmp = MainActivity.current.captureActivityWindowBitmap();
             if (actBmp != null) {
+                updateCachedScreenBitmaps(actBmp);
                 showColorPickerOverlay(actBmp, bannerHint);
                 return;
             }
         }
         Bitmap fallbackBmp = createFallbackSpectrumBitmap();
+        updateCachedScreenBitmaps(fallbackBmp);
         showColorPickerOverlay(fallbackBmp, bannerHint);
     }
 
@@ -1070,10 +1217,6 @@ public class TopBarDropService extends AccessibilityService {
         return bmp;
     }
 
-    /**
-     * Produces a smooth downscaled Gaussian-like blurred copy of the screen bitmap so the
-     * Zoom Loupe Card and Top Pill render a real-time frosted glass blur of the screen underneath.
-     */
     private static Bitmap createBlurredBackdropBitmap(Bitmap src) {
         if (src == null || src.isRecycled()) return null;
         try {
@@ -1086,7 +1229,6 @@ public class TopBarDropService extends AccessibilityService {
 
             int radius = 3;
             for (int pass = 0; pass < 2; pass++) {
-                // Horizontal blur pass
                 for (int y = 0; y < smallH; y++) {
                     int rowOffset = y * smallW;
                     for (int x = 0; x < smallW; x++) {
@@ -1105,7 +1247,6 @@ public class TopBarDropService extends AccessibilityService {
                                 | (bSum / count);
                     }
                 }
-                // Vertical blur pass
                 for (int x = 0; x < smallW; x++) {
                     for (int y = 0; y < smallH; y++) {
                         int rSum = 0, gSum = 0, bSum = 0, count = 0;
@@ -1135,7 +1276,7 @@ public class TopBarDropService extends AccessibilityService {
         dismissColorPicker(false);
 
         colorPickerRoot = new ColorPickerRootView(this);
-        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, bannerHint, isDarkMode());
+        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, lastBlurredScreenBitmap, bannerHint, isDarkMode());
         colorPickerRoot.addView(colorPickerCanvas, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -1285,10 +1426,10 @@ public class TopBarDropService extends AccessibilityService {
         private final Rect fullDestRect = new Rect();
         private final Path clipPath = new Path();
 
-        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, String hint, boolean dark) {
+        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, Bitmap blurred, String hint, boolean dark) {
             super(context);
             this.screenBmp = bitmap;
-            this.blurredBmp = createBlurredBackdropBitmap(bitmap);
+            this.blurredBmp = blurred != null ? blurred : createBlurredBackdropBitmap(bitmap);
             this.bannerHint = hint;
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -1299,7 +1440,6 @@ public class TopBarDropService extends AccessibilityService {
             gridLinePaint.setStrokeWidth(1f);
             gridLinePaint.setColor(0x28FFFFFF);
 
-            // Translucent frosted glass overlay tint (lets the blurred backdrop shine through!)
             glassTintPaint.setStyle(Paint.Style.FILL);
             glassTintPaint.setColor(dark ? Color.parseColor("#A6181A22") : Color.parseColor("#B8F4F8FC"));
 
@@ -1433,6 +1573,7 @@ public class TopBarDropService extends AccessibilityService {
 
             int alphaInt = clamp(Math.round(Math.min(1f, Math.max(0f, animProgress)) * 255f), 0, 255);
             bmpPaint.setAlpha(alphaInt);
+            // Draw the unblurred screen snapshot so the rest of the screen stays 100% sharp!
             canvas.drawBitmap(screenBmp, 0f, 0f, bmpPaint);
 
             if (pointerX < 0f || pointerY < 0f) {
@@ -1450,7 +1591,7 @@ public class TopBarDropService extends AccessibilityService {
 
             float scale = 0.72f + 0.28f * animProgress;
 
-            // 1. Draw Frosted Glass Top Instruction Pill
+            // 1. Draw Frosted Glass Top Instruction Pill (blurs ONLY inside the pill!)
             String topMsg = (bannerHint != null && !bannerHint.isEmpty())
                     ? bannerHint
                     : "Color Picker — Move cursor & click to copy " + hex + " · Right-click or Esc to cancel";
@@ -1491,11 +1632,9 @@ public class TopBarDropService extends AccessibilityService {
             float cursorOffset = dpToPx(26f);
             float screenEdgeMargin = dpToPx(14f);
 
-            // Default: ON TOP OF the crosshair
             float cardLeft = pointerX - cardW / 2f;
             float cardTop = pointerY - cursorOffset - cardH;
 
-            // Flip to BOTTOM of the crosshair if the top zoom preview would be out of view
             if (cardTop < screenEdgeMargin) {
                 cardTop = pointerY + cursorOffset;
             }
@@ -1633,33 +1772,14 @@ public class TopBarDropService extends AccessibilityService {
 
     private void showCopiedColorBadge(int color, String hex) {
         boolean dark = isDarkMode();
-        final float pillRadius = dpToPx(24f);
         final FrameLayout badgeRoot = new FrameLayout(this);
+        int outerPad = dpToPx(8f);
+        badgeRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            badgeRoot.setOutlineProvider(new ViewOutlineProvider() {
-                @Override
-                public void getOutline(View view, Outline outline) {
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), pillRadius);
-                }
-            });
-            badgeRoot.setClipToOutline(true);
-        }
-
-        final LinearLayout pill = new LinearLayout(this);
+        final FrostedGlassCardLayout pill = new FrostedGlassCardLayout(this, dark, dpToPx(24f));
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
         pill.setPadding(dpToPx(14f), dpToPx(10f), dpToPx(16f), dpToPx(10f));
-
-        GradientDrawable pillBg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                dark
-                        ? new int[]{Color.parseColor("#BF262934"), Color.parseColor("#AD16181F")}
-                        : new int[]{Color.parseColor("#D6FFFFFF"), Color.parseColor("#BFEAF0F6")}
-        );
-        pillBg.setCornerRadius(pillRadius);
-        pillBg.setStroke(dpToPx(1.5f), dark ? Color.parseColor("#992DD4BF") : Color.parseColor("#990D9488"));
-        pill.setBackground(pillBg);
 
         View swatch = new View(this);
         GradientDrawable swatchBg = new GradientDrawable();
@@ -1688,14 +1808,11 @@ public class TopBarDropService extends AccessibilityService {
         lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
         lp.x = dpToPx(18f);
         lp.y = dpToPx(46f);
+        // No FLAG_BLUR_BEHIND so the screen stays 100% sharp!
         lp.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                | WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            lp.setBlurBehindRadius(dpToPx(28f));
-        }
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
 
         pill.setScaleX(0.75f);
         pill.setScaleY(0.75f);

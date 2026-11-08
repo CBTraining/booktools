@@ -1,6 +1,6 @@
 {
-  "version": "1.000",
-  "versionCode": 1000,
+  "version": "1.001",
+  "versionCode": 1001,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "v1.000: Reset version to 1.000 (+0.001 per update) and added automatic GitHub update detection & self-updater"
+  "notes": "v1.001: Frosted glass blur strictly inside popup cards without blurring the rest of the screen"
 }
