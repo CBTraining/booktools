@@ -1,6 +1,6 @@
 {
-  "version": "1.006",
-  "versionCode": 1006,
+  "version": "1.007",
+  "versionCode": 1007,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.006: Restored direct in-app auto-download and PackageInstaller self-update (no Downloads folder clutter) + Ctrl + Shift + G 100% Local Clipboard History (up to 30 items)"
+  "notes": "BookTools v1.007: Offloaded PNG & image I/O to background executor, added EXTRA_IS_SENSITIVE password filtering & atomic 0600 storage, 1px Arrow-Key crosshair nudging in Color Picker, and [1]-[9] quick-keys in Local Clipboard History"
 }

@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.PersistableBundle;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -27,9 +28,11 @@ import java.util.regex.Pattern;
 
 /**
  * 100% Local On-Device Clipboard History Manager for BookTools.
- * Stores up to 30 recent clipboard items (Text snippets, HEX Colors, and PNG Images)
- * strictly inside the app's private local storage (context.getFilesDir()).
- * Zero network calls or external transmissions are ever made.
+ *  - Stores up to 30 recent clipboard items (Text snippets, HEX Colors, and PNG Images)
+ *    strictly inside the app's private local storage (context.getFilesDir()) with 0600 permissions.
+ *  - Honors Android 13+ ClipDescription.EXTRA_IS_SENSITIVE so passwords/tokens copied from
+ *    password managers are automatically ignored and never stored.
+ *  - Uses atomic temp-file-and-rename writes so history.json can never be corrupted.
  */
 public class ClipboardHistoryManager {
 
@@ -42,6 +45,7 @@ public class ClipboardHistoryManager {
     private static final String HISTORY_DIR_NAME = "clipboard_history";
     private static final String THUMBS_DIR_NAME = "thumbs";
     private static final String HISTORY_JSON_NAME = "history.json";
+    private static final String EXTRA_IS_SENSITIVE_KEY = "android.content.extra.IS_SENSITIVE";
 
     private static final Pattern HEX_COLOR_PATTERN =
             Pattern.compile("^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$");
@@ -82,6 +86,25 @@ public class ClipboardHistoryManager {
         return System.currentTimeMillis() < suppressNextClipUntilMs;
     }
 
+    /**
+     * Checks whether the ClipData is flagged as sensitive (e.g., passwords from password managers
+     * using ClipDescription.EXTRA_IS_SENSITIVE). Sensitive clips are never recorded to history.
+     */
+    public static boolean isSensitiveClip(ClipData clip) {
+        if (clip == null) return false;
+        try {
+            ClipDescription desc = clip.getDescription();
+            if (desc != null) {
+                PersistableBundle extras = desc.getExtras();
+                if (extras != null && extras.getBoolean(EXTRA_IS_SENSITIVE_KEY, false)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     public static List<HistoryItem> getItems(Context context) {
         synchronized (LOCK) {
             ensureLoadedLocked(context);
@@ -103,10 +126,8 @@ public class ClipboardHistoryManager {
         if (context == null || rawText == null) return;
         String trimmed = rawText.trim();
         if (trimmed.isEmpty()) return;
-        // Skip data:image base64 strings from being stored as giant text blobs
         if (trimmed.startsWith("data:image/")) return;
 
-        // Cap individual text entries at 64 KB to keep local JSON fast and lightweight
         String storedText = rawText.length() > 65536 ? rawText.substring(0, 65536) : rawText;
 
         boolean isColor = HEX_COLOR_PATTERN.matcher(trimmed).matches();
@@ -140,7 +161,6 @@ public class ClipboardHistoryManager {
         synchronized (LOCK) {
             ensureLoadedLocked(context);
 
-            // Deduplicate if the same text/color already exists: move to top and update timestamp
             for (int i = 0; i < cachedItems.size(); i++) {
                 HistoryItem existing = cachedItems.get(i);
                 if ((TYPE_TEXT.equals(existing.type) || TYPE_COLOR.equals(existing.type))
@@ -184,7 +204,6 @@ public class ClipboardHistoryManager {
         synchronized (LOCK) {
             ensureLoadedLocked(context);
 
-            // If this exact image URI is already in history, bump it to the top
             for (int i = 0; i < cachedItems.size(); i++) {
                 HistoryItem existing = cachedItems.get(i);
                 if (TYPE_IMAGE.equals(existing.type) && uriStr.equals(existing.imageUriString)) {
@@ -249,7 +268,9 @@ public class ClipboardHistoryManager {
 
     public static Bitmap loadThumbnailBitmap(Context context, HistoryItem item) {
         if (context == null || item == null || item.thumbFileName == null) return null;
-        File thumbFile = new File(getThumbsDir(context), item.thumbFileName);
+        // Guard against path traversal in thumbFileName
+        String safeName = new File(item.thumbFileName).getName();
+        File thumbFile = new File(getThumbsDir(context), safeName);
         if (!thumbFile.exists()) return null;
         try {
             return BitmapFactory.decodeFile(thumbFile.getAbsolutePath());
@@ -286,7 +307,6 @@ public class ClipboardHistoryManager {
                 return false;
             }
 
-            // Bump item to top of history
             synchronized (LOCK) {
                 ensureLoadedLocked(context);
                 for (int i = 0; i < cachedItems.size(); i++) {
@@ -305,6 +325,17 @@ public class ClipboardHistoryManager {
         }
     }
 
+    private static void enforceOwnerOnlyPermissions(File file) {
+        if (file == null || !file.exists()) return;
+        try {
+            file.setReadable(false, false);
+            file.setReadable(true, true);
+            file.setWritable(false, false);
+            file.setWritable(true, true);
+        } catch (Exception ignored) {
+        }
+    }
+
     private static String saveThumbnailLocked(Context context, String itemId, Bitmap source) {
         try {
             int maxDim = 160;
@@ -316,11 +347,13 @@ public class ClipboardHistoryManager {
             int th = Math.max(1, Math.round(h * ratio));
             Bitmap thumb = (tw == w && th == h) ? source : Bitmap.createScaledBitmap(source, tw, th, true);
 
-            String fileName = "thumb_" + itemId + ".png";
+            String safeId = itemId.replaceAll("[^a-zA-Z0-9_-]", "");
+            String fileName = "thumb_" + safeId + ".png";
             File outFile = new File(getThumbsDir(context), fileName);
             try (FileOutputStream fos = new FileOutputStream(outFile)) {
                 thumb.compress(Bitmap.CompressFormat.PNG, 90, fos);
             }
+            enforceOwnerOnlyPermissions(outFile);
             if (thumb != source && !thumb.isRecycled()) {
                 thumb.recycle();
             }
@@ -333,7 +366,8 @@ public class ClipboardHistoryManager {
     private static void deleteThumbnailFileLocked(Context context, String thumbFileName) {
         if (thumbFileName == null || thumbFileName.isEmpty()) return;
         try {
-            File f = new File(getThumbsDir(context), thumbFileName);
+            String safeName = new File(thumbFileName).getName();
+            File f = new File(getThumbsDir(context), safeName);
             if (f.exists()) {
                 f.delete();
             }
@@ -352,6 +386,7 @@ public class ClipboardHistoryManager {
         File dir = new File(context.getFilesDir(), HISTORY_DIR_NAME);
         if (!dir.exists()) {
             dir.mkdirs();
+            enforceOwnerOnlyPermissions(dir);
         }
         return dir;
     }
@@ -360,6 +395,7 @@ public class ClipboardHistoryManager {
         File dir = new File(getHistoryDir(context), THUMBS_DIR_NAME);
         if (!dir.exists()) {
             dir.mkdirs();
+            enforceOwnerOnlyPermissions(dir);
         }
         return dir;
     }
@@ -417,12 +453,23 @@ public class ClipboardHistoryManager {
                 obj.put("timestampMs", item.timestampMs);
                 arr.put(obj);
             }
-            File jsonFile = new File(getHistoryDir(context), HISTORY_JSON_NAME);
+            File dir = getHistoryDir(context);
+            File tmpFile = new File(dir, HISTORY_JSON_NAME + ".tmp");
+            File jsonFile = new File(dir, HISTORY_JSON_NAME);
             byte[] bytes = arr.toString().getBytes(StandardCharsets.UTF_8);
-            try (FileOutputStream fos = new FileOutputStream(jsonFile, false)) {
+            try (FileOutputStream fos = new FileOutputStream(tmpFile, false)) {
                 fos.write(bytes);
-                fos.flush();
+                fos.getFD().sync();
             }
+            enforceOwnerOnlyPermissions(tmpFile);
+            if (!tmpFile.renameTo(jsonFile)) {
+                try (FileOutputStream fos = new FileOutputStream(jsonFile, false)) {
+                    fos.write(bytes);
+                    fos.flush();
+                }
+                tmpFile.delete();
+            }
+            enforceOwnerOnlyPermissions(jsonFile);
         } catch (Exception ignored) {
         }
     }

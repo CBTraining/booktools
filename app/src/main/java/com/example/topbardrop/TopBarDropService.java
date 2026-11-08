@@ -68,18 +68,21 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Global keyboard shortcut service for BookTools:
  *  - Ctrl + Shift + D: Reads clipboard image (WebP, JPEG, PNG, GIF, BMP, data URI),
- *    saves it as a lossless .png in Downloads, and opens a frosted glass popup card
- *    (without blurring the whole screen!) where you can click-and-drag the PNG into any app,
- *    or dismiss by swiping or right-clicking.
+ *    saves it as a lossless .png in Downloads on a background I/O thread, and opens a frosted
+ *    glass popup card (without blurring the whole screen!) where you can click-and-drag the PNG
+ *    into any app, or dismiss by swiping or right-clicking.
  *  - Ctrl + Shift + C: Captures the screen and opens an interactive Crosshair + Frosted Glass
  *    Zoom Magnifier Loupe (which flips automatically between top and bottom if near screen edges)
- *    so clicking copies the pointed pixel's #RRGGBB HEX code to the clipboard.
+ *    with 1px Arrow-Key precision nudging, copying the pointed pixel's #RRGGBB HEX code.
  *  - Ctrl + Shift + G: Opens the 100% Local Clipboard History (up to 30 recent Text snippets,
- *    HEX Colors, and PNG Images) to click-to-copy or click-and-drag directly into any app.
+ *    HEX Colors, and PNG Images, ignoring EXTRA_IS_SENSITIVE passwords) with [1]-[9] quick-keys,
+ *    click-to-copy, and click-and-drag directly into any app.
  *  - Automatically adapts overlays to Device Dark Mode / Light Mode settings.
  */
 public class TopBarDropService extends AccessibilityService {
@@ -90,6 +93,7 @@ public class TopBarDropService extends AccessibilityService {
 
     private WindowManager windowManager;
     private Handler handler;
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private ClipboardManager clipboardManager;
     private ClipboardManager.OnPrimaryClipChangedListener clipChangedListener;
     private View focusProbeView;
@@ -284,6 +288,7 @@ public class TopBarDropService extends AccessibilityService {
     @Override
     public void onDestroy() {
         unregisterLocalClipboardMonitor();
+        ioExecutor.shutdownNow();
         dismissPopup(false);
         dismissColorPicker(false);
         dismissHistoryPopup(false);
@@ -893,86 +898,116 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    private void saveBitmapAsPngAndPopulatePopup(Bitmap bitmap, String baseName) {
-        int fullWidth = bitmap.getWidth();
-        int fullHeight = bitmap.getHeight();
-        try {
-            String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
-            String cleanBase = (baseName != null && !baseName.isEmpty())
-                    ? baseName + "_dl"
-                    : "clipboard_" + timestamp + "_dl";
-            String pngFileName = cleanBase + ".png";
+    private void saveBitmapAsPngAndPopulatePopup(final Bitmap bitmap, final String baseName) {
+        final int fullWidth = bitmap.getWidth();
+        final int fullHeight = bitmap.getHeight();
+        final int maxPreviewDim = dpToPx(280f);
 
-            Uri savedUri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
-                values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
-                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+        ioExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
+                    String cleanBase = (baseName != null && !baseName.isEmpty())
+                            ? baseName + "_dl"
+                            : "clipboard_" + timestamp + "_dl";
+                    final String pngFileName = cleanBase + ".png";
 
-                savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (savedUri == null) {
-                    throw new IllegalStateException("Could not create PNG in Downloads");
+                    final Uri savedUri;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
+                        values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
+                        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+
+                        savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                        if (savedUri == null) {
+                            throw new IllegalStateException("Could not create PNG in Downloads");
+                        }
+                        try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+                        }
+                    } else {
+                        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                        if (!dir.exists()) dir.mkdirs();
+                        File outFile = new File(dir, pngFileName);
+                        try (OutputStream out = new FileOutputStream(outFile)) {
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+                        }
+                        savedUri = Uri.fromFile(outFile);
+                    }
+
+                    // Create a lightweight downscaled thumbnail for the popup preview and immediately
+                    // recycle the full-resolution bitmap so large 4K clipboard images never sit in RAM.
+                    Bitmap scaledPreview = bitmap;
+                    if (fullWidth > maxPreviewDim || fullHeight > maxPreviewDim) {
+                        float ratio = Math.min((float) maxPreviewDim / fullWidth, (float) maxPreviewDim / fullHeight);
+                        int pw = Math.max(1, Math.round(fullWidth * ratio));
+                        int ph = Math.max(1, Math.round(fullHeight * ratio));
+                        scaledPreview = Bitmap.createScaledBitmap(bitmap, pw, ph, true);
+                        if (scaledPreview != bitmap) {
+                            bitmap.recycle();
+                        }
+                    }
+                    final Bitmap finalPreviewBmp = scaledPreview;
+
+                    // Save to 100% Local Clipboard History (Ctrl + Shift + G) on background thread
+                    ClipboardHistoryManager.addImageItem(
+                            TopBarDropService.this,
+                            savedUri,
+                            pngFileName,
+                            finalPreviewBmp,
+                            fullWidth,
+                            fullHeight
+                    );
+
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!popupShown || popupDismissing) {
+                                if (finalPreviewBmp != null && !finalPreviewBmp.isRecycled()) {
+                                    finalPreviewBmp.recycle();
+                                }
+                                return;
+                            }
+                            currentPngUri = savedUri;
+                            currentPngFileName = pngFileName;
+                            if (currentPreviewBitmap != null && currentPreviewBitmap != finalPreviewBmp && !currentPreviewBitmap.isRecycled()) {
+                                currentPreviewBitmap.recycle();
+                            }
+                            currentPreviewBitmap = finalPreviewBmp;
+
+                            headerTitleView.setText("Saved PNG: " + pngFileName);
+                            subtitleView.setText(fullWidth + " × " + fullHeight + " px · Downloaded to Downloads");
+                            previewImageView.setImageBitmap(finalPreviewBmp);
+                            dragHintView.setText("⬇ Click & Drag this PNG into any app");
+
+                            dragBox.setScaleX(0.95f);
+                            dragBox.setScaleY(0.95f);
+                            dragBox.animate()
+                                    .scaleX(1.0f)
+                                    .scaleY(1.0f)
+                                    .setDuration(160)
+                                    .setInterpolator(new OvershootInterpolator(1.2f))
+                                    .start();
+
+                            lastActionMessage = "Saved " + pngFileName + " (" + fullWidth + "×" + fullHeight + ") to Downloads";
+                            notifyActivityStatus();
+                        }
+                    });
+                } catch (final Exception e) {
+                    if (!bitmap.isRecycled()) {
+                        bitmap.recycle();
+                    }
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            showPopupError("Failed to save PNG", e.getMessage());
+                        }
+                    });
                 }
-                try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                }
-            } else {
-                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!dir.exists()) dir.mkdirs();
-                File outFile = new File(dir, pngFileName);
-                try (OutputStream out = new FileOutputStream(outFile)) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                }
-                savedUri = Uri.fromFile(outFile);
             }
-
-            currentPngUri = savedUri;
-            currentPngFileName = pngFileName;
-
-            // Create a lightweight downscaled thumbnail for the popup preview and immediately
-            // recycle the full-resolution bitmap so large 4K clipboard images never sit in RAM.
-            int maxPreviewDim = dpToPx(280f);
-            Bitmap previewBmp = bitmap;
-            if (fullWidth > maxPreviewDim || fullHeight > maxPreviewDim) {
-                float ratio = Math.min((float) maxPreviewDim / fullWidth, (float) maxPreviewDim / fullHeight);
-                int pw = Math.max(1, Math.round(fullWidth * ratio));
-                int ph = Math.max(1, Math.round(fullHeight * ratio));
-                previewBmp = Bitmap.createScaledBitmap(bitmap, pw, ph, true);
-                if (previewBmp != bitmap) {
-                    bitmap.recycle();
-                }
-            }
-            if (currentPreviewBitmap != null && currentPreviewBitmap != previewBmp && !currentPreviewBitmap.isRecycled()) {
-                currentPreviewBitmap.recycle();
-            }
-            currentPreviewBitmap = previewBmp;
-
-            // Save to 100% Local Clipboard History (Ctrl + Shift + G)
-            ClipboardHistoryManager.addImageItem(this, savedUri, pngFileName, previewBmp, fullWidth, fullHeight);
-
-            headerTitleView.setText("Saved PNG: " + pngFileName);
-            subtitleView.setText(fullWidth + " × " + fullHeight + " px · Downloaded to Downloads");
-            previewImageView.setImageBitmap(previewBmp);
-            dragHintView.setText("⬇ Click & Drag this PNG into any app");
-
-            dragBox.setScaleX(0.95f);
-            dragBox.setScaleY(0.95f);
-            dragBox.animate()
-                    .scaleX(1.0f)
-                    .scaleY(1.0f)
-                    .setDuration(160)
-                    .setInterpolator(new OvershootInterpolator(1.2f))
-                    .start();
-
-            lastActionMessage = "Saved " + pngFileName + " (" + fullWidth + "×" + fullHeight + ") to Downloads";
-            notifyActivityStatus();
-        } catch (Exception e) {
-            if (!bitmap.isRecycled()) {
-                bitmap.recycle();
-            }
-            showPopupError("Failed to save PNG", e.getMessage());
-        }
+        });
     }
 
     private void showPopupError(String title, String details) {
@@ -1506,13 +1541,31 @@ public class TopBarDropService extends AccessibilityService {
         @Override
         public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                int code = event.getKeyCode();
+                if (code == KeyEvent.KEYCODE_ESCAPE) {
                     dismissColorPicker(true);
                     return true;
                 }
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER || event.getKeyCode() == KeyEvent.KEYCODE_SPACE) {
+                if (code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_SPACE || code == KeyEvent.KEYCODE_NUMPAD_ENTER) {
                     if (colorPickerCanvas != null) {
                         colorPickerCanvas.pickCurrentColorAndClose();
+                        return true;
+                    }
+                }
+                // 1px precision nudging with Arrow Keys (or 10px with Shift + Arrow)
+                if (colorPickerCanvas != null) {
+                    int step = event.isShiftPressed() ? 10 : 1;
+                    if (code == KeyEvent.KEYCODE_DPAD_LEFT) {
+                        colorPickerCanvas.nudgePointerByPixels(-step, 0);
+                        return true;
+                    } else if (code == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                        colorPickerCanvas.nudgePointerByPixels(step, 0);
+                        return true;
+                    } else if (code == KeyEvent.KEYCODE_DPAD_UP) {
+                        colorPickerCanvas.nudgePointerByPixels(0, -step);
+                        return true;
+                    } else if (code == KeyEvent.KEYCODE_DPAD_DOWN) {
+                        colorPickerCanvas.nudgePointerByPixels(0, step);
                         return true;
                     }
                 }
@@ -1671,6 +1724,14 @@ public class TopBarDropService extends AccessibilityService {
         public void updatePointerFromMotionEvent(MotionEvent event) {
             pointerX = event.getX();
             pointerY = event.getY();
+            invalidate();
+        }
+
+        public void nudgePointerByPixels(int dx, int dy) {
+            int maxW = Math.max(1, getWidth() - 1);
+            int maxH = Math.max(1, getHeight() - 1);
+            pointerX = Math.max(0f, Math.min(maxW, pointerX + dx));
+            pointerY = Math.max(0f, Math.min(maxH, pointerY + dy));
             invalidate();
         }
 
@@ -2142,27 +2203,43 @@ public class TopBarDropService extends AccessibilityService {
 
     private void ingestClipDataIntoLocalHistory(ClipData clip) {
         if (clip == null || clip.getItemCount() == 0) return;
-        ContentResolver resolver = getContentResolver();
+        // Privacy & Security: Never record sensitive clips (e.g., passwords from password managers)
+        if (ClipboardHistoryManager.isSensitiveClip(clip)) {
+            return;
+        }
+        final ContentResolver resolver = getContentResolver();
 
         for (int i = 0; i < clip.getItemCount(); i++) {
             ClipData.Item item = clip.getItemAt(i);
             if (item == null) continue;
 
-            Uri uri = item.getUri();
+            final Uri uri = item.getUri();
             if (uri != null) {
-                Bitmap bmp = decodeBitmapFromUri(resolver, uri);
-                if (bmp != null) {
-                    saveClipBitmapQuietlyToHistory(bmp, extractBaseName(queryDisplayName(resolver, uri)));
-                    continue;
-                }
+                ioExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        Bitmap bmp = decodeBitmapFromUri(resolver, uri);
+                        if (bmp != null) {
+                            saveClipBitmapQuietlyToHistory(bmp, extractBaseName(queryDisplayName(resolver, uri)));
+                        }
+                    }
+                });
+                continue;
             }
 
             CharSequence textCs = item.getText();
             if (textCs != null && textCs.length() > 0) {
-                String text = textCs.toString();
-                Bitmap dataBmp = decodeBitmapFromDataUriText(text);
-                if (dataBmp != null) {
-                    saveClipBitmapQuietlyToHistory(dataBmp, null);
+                final String text = textCs.toString();
+                if (text.contains("data:image/")) {
+                    ioExecutor.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            Bitmap dataBmp = decodeBitmapFromDataUriText(text);
+                            if (dataBmp != null) {
+                                saveClipBitmapQuietlyToHistory(dataBmp, null);
+                            }
+                        }
+                    });
                 } else {
                     ClipboardHistoryManager.addTextOrColorItem(this, text);
                     notifyActivityStatus();
@@ -2170,12 +2247,17 @@ public class TopBarDropService extends AccessibilityService {
                 continue;
             }
 
-            String html = item.getHtmlText();
-            if (html != null && !html.isEmpty()) {
-                Bitmap dataBmp = decodeBitmapFromDataUriText(html);
-                if (dataBmp != null) {
-                    saveClipBitmapQuietlyToHistory(dataBmp, null);
-                }
+            final String html = item.getHtmlText();
+            if (html != null && html.contains("data:image/")) {
+                ioExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        Bitmap dataBmp = decodeBitmapFromDataUriText(html);
+                        if (dataBmp != null) {
+                            saveClipBitmapQuietlyToHistory(dataBmp, null);
+                        }
+                    }
+                });
             }
         }
     }
@@ -2213,7 +2295,15 @@ public class TopBarDropService extends AccessibilityService {
             }
 
             ClipboardHistoryManager.addImageItem(this, savedUri, pngFileName, bitmap, fullWidth, fullHeight);
-            notifyActivityStatus();
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (historyShown && !historyDismissing) {
+                        populateHistoryItemsList();
+                    }
+                    notifyActivityStatus();
+                }
+            });
         } catch (Exception ignored) {
         } finally {
             if (!bitmap.isRecycled()) {
@@ -2587,7 +2677,7 @@ public class TopBarDropService extends AccessibilityService {
 
         for (int i = 0; i < items.size(); i++) {
             final ClipboardHistoryManager.HistoryItem item = items.get(i);
-            View rowView = createHistoryRowView(item, i == 0, dark, textPrimary, textSecondary, textMuted, accentTeal, rowBgColor, rowStrokeColor);
+            View rowView = createHistoryRowView(item, i, dark, textPrimary, textSecondary, textMuted, accentTeal, rowBgColor, rowStrokeColor);
             LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -2601,7 +2691,7 @@ public class TopBarDropService extends AccessibilityService {
 
     private View createHistoryRowView(
             final ClipboardHistoryManager.HistoryItem item,
-            boolean isTopItem,
+            int index,
             boolean dark,
             int textPrimary,
             int textSecondary,
@@ -2610,6 +2700,7 @@ public class TopBarDropService extends AccessibilityService {
             int rowBgColor,
             int rowStrokeColor
     ) {
+        boolean isTopItem = (index == 0);
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -2709,9 +2800,10 @@ public class TopBarDropService extends AccessibilityService {
 
         row.addView(infoCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 3. Right Drag/Copy Chip + Individual Delete Button
+        // 3. Right Drag/Copy Chip (+ [1]-[9] quick-key hint) + Individual Delete Button
         TextView actionChip = new TextView(this);
-        actionChip.setText(ClipboardHistoryManager.TYPE_IMAGE.equals(item.type) ? "⤓ Drag/Copy" : "Copy");
+        String keyPrefix = (index >= 0 && index < 9) ? "[" + (index + 1) + "] " : "";
+        actionChip.setText(keyPrefix + (ClipboardHistoryManager.TYPE_IMAGE.equals(item.type) ? "⤓ Drag/Copy" : "Copy"));
         actionChip.setTextColor(accentTeal);
         actionChip.setTypeface(Typeface.DEFAULT_BOLD);
         actionChip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
@@ -3012,9 +3104,24 @@ public class TopBarDropService extends AccessibilityService {
         @Override
         public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                int code = event.getKeyCode();
+                if (code == KeyEvent.KEYCODE_ESCAPE) {
                     dismissHistoryPopup(true);
                     return true;
+                }
+                int quickIndex = -1;
+                if (code >= KeyEvent.KEYCODE_1 && code <= KeyEvent.KEYCODE_9) {
+                    quickIndex = code - KeyEvent.KEYCODE_1;
+                } else if (code >= KeyEvent.KEYCODE_NUMPAD_1 && code <= KeyEvent.KEYCODE_NUMPAD_9) {
+                    quickIndex = code - KeyEvent.KEYCODE_NUMPAD_1;
+                }
+                if (quickIndex >= 0) {
+                    List<ClipboardHistoryManager.HistoryItem> items =
+                            ClipboardHistoryManager.getItems(TopBarDropService.this);
+                    if (quickIndex < items.size()) {
+                        copyHistoryItemAndDismiss(items.get(quickIndex));
+                        return true;
+                    }
                 }
             }
             return super.dispatchKeyEvent(event);

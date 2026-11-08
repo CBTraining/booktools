@@ -260,6 +260,12 @@ public class AutoUpdater {
             if (archiveInfo == null || !context.getPackageName().equals(archiveInfo.packageName)) {
                 return false;
             }
+            long archiveCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? archiveInfo.getLongVersionCode()
+                    : archiveInfo.versionCode;
+            if (archiveCode <= getInstalledVersionCode(context)) {
+                return false;
+            }
             PackageInfo installedInfo = pm.getPackageInfo(context.getPackageName(), flags);
             if (archiveInfo.signatures == null || archiveInfo.signatures.length == 0
                     || installedInfo.signatures == null || installedInfo.signatures.length == 0) {
