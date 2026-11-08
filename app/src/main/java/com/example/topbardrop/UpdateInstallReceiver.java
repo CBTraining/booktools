@@ -21,9 +21,13 @@ public class UpdateInstallReceiver extends BroadcastReceiver {
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             Intent confirmIntent = intent.getParcelableExtra(Intent.EXTRA_INTENT);
             if (confirmIntent != null) {
-                confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 try {
-                    context.startActivity(confirmIntent);
+                    if (MainActivity.current != null) {
+                        MainActivity.current.startActivity(confirmIntent);
+                    } else {
+                        confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(confirmIntent);
+                    }
                 } catch (Exception e) {
                     Toast.makeText(context, "Could not launch update prompt: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 }

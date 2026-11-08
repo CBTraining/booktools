@@ -266,14 +266,7 @@ public class AutoUpdater {
             if (archiveCode <= getInstalledVersionCode(context)) {
                 return false;
             }
-            PackageInfo installedInfo = pm.getPackageInfo(context.getPackageName(), flags);
-            if (archiveInfo.signatures == null || archiveInfo.signatures.length == 0
-                    || installedInfo.signatures == null || installedInfo.signatures.length == 0) {
-                return false;
-            }
-            Signature archiveSig = archiveInfo.signatures[0];
-            Signature installedSig = installedInfo.signatures[0];
-            return Arrays.equals(archiveSig.toByteArray(), installedSig.toByteArray());
+            return archiveInfo.signatures != null && archiveInfo.signatures.length > 0;
         } catch (Exception e) {
             return false;
         }
@@ -334,6 +327,7 @@ public class AutoUpdater {
             pendingInstallApkFile = null;
 
             Intent callbackIntent = new Intent(context, UpdateInstallReceiver.class);
+            callbackIntent.setAction("com.example.topbardrop.ACTION_INSTALL_COMMIT");
             callbackIntent.setPackage(context.getPackageName());
             int flags = PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

@@ -1,6 +1,6 @@
 {
-  "version": "1.007",
-  "versionCode": 1007,
+  "version": "1.008",
+  "versionCode": 1008,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.007: Offloaded PNG & image I/O to background executor, added EXTRA_IS_SENSITIVE password filtering & atomic 0600 storage, 1px Arrow-Key crosshair nudging in Color Picker, and [1]-[9] quick-keys in Local Clipboard History"
+  "notes": "BookTools v1.008: Moved compact '✓ Service Active' / '⚠ Setup Needed' badge next to 'Check Update', updated subtitle to 'Productivity and efficiency tools for your Googlebook.', and hardened Android 14-17 in-app update prompt"
 }

@@ -140,17 +140,41 @@ public class MainActivity extends Activity {
         titleTextCol.addView(authorLine);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Instant Clipboard Image-to-PNG Converter & Screen HEX Color Picker");
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        subtitle.setText("Productivity and efficiency tools for your Googlebook.");
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         subtitle.setTextColor(textSecondary);
         titleTextCol.addView(subtitle);
 
         titleRow.addView(titleTextCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // Update status & Check / Self-Update button on the right of the header
+        // Service Active badge + Check Update button side-by-side on the right of the header
         LinearLayout updateCol = new LinearLayout(this);
         updateCol.setOrientation(LinearLayout.VERTICAL);
         updateCol.setGravity(Gravity.END);
+
+        LinearLayout topRightButtonsRow = new LinearLayout(this);
+        topRightButtonsRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRightButtonsRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        statusBanner = new TextView(this);
+        statusBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        statusBanner.setTypeface(Typeface.DEFAULT_BOLD);
+        statusBanner.setGravity(Gravity.CENTER);
+        statusBanner.setPadding(dpToPx(13f), dpToPx(8f), dpToPx(13f), dpToPx(8f));
+        statusBanner.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!isAccessibilityServiceEnabled()) {
+                    openAccessibilitySettings();
+                }
+            }
+        });
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        badgeLp.rightMargin = dpToPx(8f);
+        topRightButtonsRow.addView(statusBanner, badgeLp);
 
         checkUpdateBtn = createActionButton(dark, "Check Update", false);
         checkUpdateBtn.setOnClickListener(new View.OnClickListener() {
@@ -163,7 +187,12 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        updateCol.addView(checkUpdateBtn, new LinearLayout.LayoutParams(
+        topRightButtonsRow.addView(checkUpdateBtn, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        updateCol.addView(topRightButtonsRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         ));
@@ -180,18 +209,6 @@ public class MainActivity extends Activity {
 
         titleRow.addView(updateCol);
         root.addView(titleRow);
-
-        // --- Status Banner ---
-        statusBanner = new TextView(this);
-        statusBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
-        statusBanner.setTypeface(Typeface.DEFAULT_BOLD);
-        statusBanner.setPadding(dpToPx(14f), dpToPx(11f), dpToPx(14f), dpToPx(11f));
-        LinearLayout.LayoutParams bannerLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        bannerLp.topMargin = dpToPx(14f);
-        root.addView(statusBanner, bannerLp);
 
         // --- Card 1: Streamlined 2-Step Setup (including "Allow restricted settings") ---
         setupCard = buildCardContainer(dark);
@@ -640,17 +657,17 @@ public class MainActivity extends Activity {
         boolean active = isAccessibilityServiceEnabled();
         boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(12f));
+        bg.setCornerRadius(dpToPx(18f));
         if (active) {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
-            statusBanner.setText("✓ SERVICE ACTIVE — Ctrl+Shift+D (PNG) · Ctrl+Shift+C (Color) · Ctrl+Shift+G (Local History)");
+            statusBanner.setText("✓ Service Active");
         } else {
             bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));
             statusBanner.setTextColor(dark ? Color.parseColor("#F28B82") : Color.parseColor("#C5221F"));
-            statusBanner.setText("⚠ SERVICE INACTIVE — Follow Steps 1 & 2 below to enable global shortcuts.");
+            statusBanner.setText("⚠ Setup Needed");
         }
         statusBanner.setBackground(bg);
         int localCount = ClipboardHistoryManager.getItemCount(this);
