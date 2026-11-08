@@ -240,13 +240,6 @@ public class MainActivity extends Activity {
                 }
         ));
 
-        LinearLayout.LayoutParams cardLp1 = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        cardLp1.topMargin = dpToPx(12f);
-        root.addView(setupCard, cardLp1);
-
         // --- Card 2: Keyboard Shortcuts Reference ---
         LinearLayout shortcutsCard = buildCardContainer(dark);
 
@@ -271,12 +264,50 @@ public class MainActivity extends Activity {
                 "Opens a precision crosshair with a frosted glass magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
         ));
 
-        LinearLayout.LayoutParams cardLp2 = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        cardLp2.topMargin = dpToPx(12f);
-        root.addView(shortcutsCard, cardLp2);
+        // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
+        boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
+
+        if (wideLayout) {
+            LinearLayout columnsRow = new LinearLayout(this);
+            columnsRow.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            rowLp.topMargin = dpToPx(12f);
+
+            LinearLayout.LayoutParams leftColLp = new LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    1f
+            );
+            leftColLp.rightMargin = dpToPx(8f);
+            columnsRow.addView(setupCard, leftColLp);
+
+            LinearLayout.LayoutParams rightColLp = new LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    1f
+            );
+            rightColLp.leftMargin = dpToPx(8f);
+            columnsRow.addView(shortcutsCard, rightColLp);
+
+            root.addView(columnsRow, rowLp);
+        } else {
+            LinearLayout.LayoutParams cardLp1 = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            cardLp1.topMargin = dpToPx(12f);
+            root.addView(setupCard, cardLp1);
+
+            LinearLayout.LayoutParams cardLp2 = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            cardLp2.topMargin = dpToPx(12f);
+            root.addView(shortcutsCard, cardLp2);
+        }
 
         // --- Card 3: Built-in Test Bar ---
         LinearLayout testCard = buildCardContainer(dark);

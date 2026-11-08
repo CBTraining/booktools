@@ -1,6 +1,6 @@
 {
-  "version": "1.002",
-  "versionCode": 1002,
+  "version": "1.003",
+  "versionCode": 1003,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "v1.002: Memory leak prevention (bitmap recycling, thumbnail downscaling, WeakReference callbacks) and security hardening (HTTPS & GitHub host pinning, APK signature verification, cleartext traffic disabled)"
+  "notes": "v1.003: Configure 3:2 horizontal desktop window size (960dp x 640dp) and 2-column horizontal layout for the main menu window"
 }
