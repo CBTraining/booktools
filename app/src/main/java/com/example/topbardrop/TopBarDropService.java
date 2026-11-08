@@ -1,14 +1,18 @@
 package com.example.topbardrop;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.ImageDecoder;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -18,548 +22,631 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
-import android.util.DisplayMetrics;
+import android.util.Base64;
 import android.util.TypedValue;
-import android.view.DragAndDropPermissions;
 import android.view.DragEvent;
 import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowInsets;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
-import android.view.WindowMetrics;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityWindowInfo;
-import android.webkit.MimeTypeMap;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.List;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
- * Places the TopBarDrop icon directly inside the Googlebook OS top status bar (y = 0)
- * using the exact same mechanism as BentoBar:
- * - TYPE_ACCESSIBILITY_OVERLAY (the only window type allowed on top of the status bar).
- * - Scans SystemUI's status bar window for `DesktopStatusBarSpacer` so the icon sits
- *   at the right end of the status bar's free space (just to the left of the system/Wi-Fi/battery icons).
- * - Expands when any drag starts (DragEvent.ACTION_DRAG_STARTED) and saves dropped files
- *   to Downloads as "<original_name>_dl.<ext>".
+ * Listens globally for Ctrl + Shift + D (via AccessibilityService.onKeyEvent),
+ * without placing any icon on the top status bar (so BentoBar has zero conflicts).
+ *
+ * When Ctrl + Shift + D is pressed:
+ * 1. Opens a focusable floating notification card at the top-right (receiving window focus
+ *    allows reading ClipboardManager on Android 10-17).
+ * 2. Reads the clipboard's contents (WebP, JPEG, PNG, GIF, BMP, or data:image base64),
+ *    converts it to a lossless PNG, and saves it into Downloads.
+ * 3. Displays the PNG inside the popup window so you can immediately click & drag the PNG
+ *    into any app, or dismiss the popup by swiping it away or right-clicking it.
  */
 public class TopBarDropService extends AccessibilityService {
 
     public static volatile TopBarDropService instance;
-    public static volatile String lastActionMessage = "Waiting for file drag...";
+    public static volatile String lastActionMessage = "Press Ctrl + Shift + D after copying any image.";
 
     private WindowManager windowManager;
-    private LinearLayout overlayContainer;
-    private LinearLayout innerPill;
-    private TextView labelView;
-    private WindowManager.LayoutParams layoutParams;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    private boolean isAdded = false;
-    private boolean isDragging = false;
-    private int currentBarHeight = 41;
-    private int currentRightOffsetPx = 240;
+    private PopupRootView popupRoot;
+    private WindowManager.LayoutParams popupParams;
+    private boolean popupShown = false;
+    private boolean clipboardProcessedForCurrentPopup = false;
 
-    private final Runnable periodicScan = new Runnable() {
-        @Override
-        public void run() {
-            if (!isDragging) {
-                scanStatusBarAndPlace();
-            }
-            handler.postDelayed(this, 3000);
-        }
-    };
+    private TextView headerTitleView;
+    private TextView subtitleView;
+    private ImageView previewImageView;
+    private LinearLayout dragBox;
+    private TextView dragHintView;
+
+    private Uri currentPngUri;
+    private String currentPngFileName;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
-        setupOverlayWindow();
-        scanStatusBarAndPlace();
-        handler.postDelayed(periodicScan, 2000);
-        if (MainActivity.current != null) {
-            MainActivity.current.runOnUiThread(new Runnable() {
+        windowManager = getSystemService(WindowManager.class);
+        if (windowManager == null) {
+            windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        }
+
+        // Ensure key event filtering is active for Ctrl + Shift + D
+        try {
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info != null) {
+                info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+                setServiceInfo(info);
+            }
+        } catch (Exception ignored) {
+        }
+
+        notifyActivityStatus();
+    }
+
+    @Override
+    protected boolean onKeyEvent(KeyEvent event) {
+        if (event != null
+                && event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getKeyCode() == KeyEvent.KEYCODE_D
+                && event.isCtrlPressed()
+                && event.isShiftPressed()) {
+            handler.post(new Runnable() {
                 @Override
                 public void run() {
-                    MainActivity.current.refreshUiState();
+                    triggerClipboardToPngPopup();
                 }
             });
+            return true; // Consume Ctrl + Shift + D
         }
+        return false;
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
-            if (!isDragging) {
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        scanStatusBarAndPlace();
-                    }
-                }, 150);
-            }
-        }
     }
 
     @Override
     public void onInterrupt() {
     }
 
-    private void setupOverlayWindow() {
-        windowManager = getSystemService(WindowManager.class);
-        if (windowManager == null) {
-            windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+    /**
+     * Shows the focusable popup window and converts the clipboard image to PNG as soon as
+     * Android grants window focus to our overlay.
+     */
+    public void triggerClipboardToPngPopup() {
+        dismissPopup();
+        clipboardProcessedForCurrentPopup = false;
+        currentPngUri = null;
+        currentPngFileName = null;
+
+        buildAndShowPopupWindow();
+
+        // Try immediately (works if MainActivity already had focus) and retry at 50ms / 150ms / 300ms
+        // once WindowManager transfers focus to our TYPE_ACCESSIBILITY_OVERLAY popup.
+        int[] delays = new int[]{0, 60, 150, 300};
+        for (int delay : delays) {
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (popupShown && !clipboardProcessedForCurrentPopup) {
+                        tryProcessClipboardImage(false);
+                    }
+                }
+            }, delay);
         }
-
-        overlayContainer = new LinearLayout(this);
-        overlayContainer.setOrientation(LinearLayout.HORIZONTAL);
-        overlayContainer.setGravity(Gravity.CENTER);
-
-        innerPill = new LinearLayout(this);
-        innerPill.setOrientation(LinearLayout.HORIZONTAL);
-        innerPill.setGravity(Gravity.CENTER);
-
-        GradientDrawable pillBg = new GradientDrawable();
-        pillBg.setShape(GradientDrawable.RECTANGLE);
-        pillBg.setCornerRadius(dpToPx(12f));
-        pillBg.setColor(Color.parseColor("#CC1A73E8"));
-        pillBg.setStroke(dpToPx(1f), Color.parseColor("#99FFFFFF"));
-        innerPill.setBackground(pillBg);
-
-        int padH = dpToPx(8f);
-        int padV = dpToPx(2f);
-        innerPill.setPadding(padH, padV, padH, padV);
-
-        labelView = new TextView(this);
-        labelView.setText("⬇ dl");
-        labelView.setTextColor(Color.WHITE);
-        labelView.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        labelView.setGravity(Gravity.CENTER);
-        innerPill.addView(labelView);
-
-        overlayContainer.addView(innerPill, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
-        ));
-
-        layoutParams = new WindowManager.LayoutParams();
-        layoutParams.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
-        layoutParams.format = PixelFormat.TRANSLUCENT;
-        layoutParams.gravity = Gravity.TOP | Gravity.RIGHT;
-        layoutParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            layoutParams.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
-        }
-        layoutParams.setTitle("TopBarDrop");
-
-        currentBarHeight = dpToPx(36f);
-        currentRightOffsetPx = dpToPx(220f);
-        layoutParams.width = dpToPx(54f);
-        layoutParams.height = currentBarHeight;
-        layoutParams.x = currentRightOffsetPx;
-        layoutParams.y = 0;
-
-        int padVContainer = dpToPx(4f);
-        overlayContainer.setPadding(0, padVContainer, 0, padVContainer);
-
-        View.OnDragListener dragListener = new View.OnDragListener() {
+        handler.postDelayed(new Runnable() {
             @Override
-            public boolean onDrag(View v, DragEvent event) {
-                return handleDragEvent(event);
+            public void run() {
+                if (popupShown && !clipboardProcessedForCurrentPopup) {
+                    tryProcessClipboardImage(true);
+                }
             }
-        };
-        overlayContainer.setOnDragListener(dragListener);
-        innerPill.setOnDragListener(dragListener);
+        }, 450);
+    }
 
-        overlayContainer.setOnClickListener(new View.OnClickListener() {
+    private void buildAndShowPopupWindow() {
+        popupRoot = new PopupRootView(this);
+        int outerPad = dpToPx(8f);
+        popupRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        int cardPad = dpToPx(16f);
+        card.setPadding(cardPad, dpToPx(14f), cardPad, cardPad);
+
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setShape(GradientDrawable.RECTANGLE);
+        cardBg.setCornerRadius(dpToPx(20f));
+        cardBg.setColor(Color.parseColor("#202124")); // Sleek Dark Material 3 Surface
+        cardBg.setStroke(dpToPx(1.5f), Color.parseColor("#5F6368"));
+        card.setBackground(cardBg);
+
+        // Header bar (supports horizontal swipe-to-dismiss)
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        headerTitleView = new TextView(this);
+        headerTitleView.setText("⏳ Reading clipboard image...");
+        headerTitleView.setTextColor(Color.WHITE);
+        headerTitleView.setTypeface(Typeface.DEFAULT_BOLD);
+        headerTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        headerRow.addView(headerTitleView, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView closeBtn = new TextView(this);
+        closeBtn.setText("✕");
+        closeBtn.setTextColor(Color.parseColor("#9AA0A6"));
+        closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+        closeBtn.setPadding(dpToPx(8f), dpToPx(2f), dpToPx(4f), dpToPx(2f));
+        closeBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Intent open = new Intent(TopBarDropService.this, MainActivity.class);
-                open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                startActivity(open);
+                dismissPopup();
+            }
+        });
+        headerRow.addView(closeBtn);
+        card.addView(headerRow);
+
+        subtitleView = new TextView(this);
+        subtitleView.setText("Converting clipboard image to PNG in Downloads...");
+        subtitleView.setTextColor(Color.parseColor("#BDC1C6"));
+        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        subtitleView.setPadding(0, dpToPx(4f), 0, dpToPx(10f));
+        card.addView(subtitleView);
+
+        // Draggable PNG Preview Box
+        dragBox = new LinearLayout(this);
+        dragBox.setOrientation(LinearLayout.VERTICAL);
+        dragBox.setGravity(Gravity.CENTER);
+        int boxPad = dpToPx(12f);
+        dragBox.setPadding(boxPad, boxPad, boxPad, boxPad);
+
+        GradientDrawable boxBg = new GradientDrawable();
+        boxBg.setCornerRadius(dpToPx(14f));
+        boxBg.setColor(Color.parseColor("#303134"));
+        boxBg.setStroke(dpToPx(1.5f), Color.parseColor("#8AB4F8"));
+        dragBox.setBackground(boxBg);
+
+        previewImageView = new ImageView(this);
+        previewImageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        previewImageView.setAdjustViewBounds(true);
+        previewImageView.setMaxHeight(dpToPx(150f));
+        LinearLayout.LayoutParams imgLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dpToPx(130f)
+        );
+        dragBox.addView(previewImageView, imgLp);
+
+        dragHintView = new TextView(this);
+        dragHintView.setText("⬇ Click & Drag this PNG into any app");
+        dragHintView.setTextColor(Color.parseColor("#8AB4F8"));
+        dragHintView.setTypeface(Typeface.DEFAULT_BOLD);
+        dragHintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        dragHintView.setGravity(Gravity.CENTER);
+        dragHintView.setPadding(0, dpToPx(8f), 0, 0);
+        dragBox.addView(dragHintView);
+
+        setupImmediateClickAndDragOnPreview(dragBox);
+        card.addView(dragBox, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView footerHint = new TextView(this);
+        footerHint.setText("Swipe header/footer or Right-click anywhere to dismiss");
+        footerHint.setTextColor(Color.parseColor("#9AA0A6"));
+        footerHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        footerHint.setGravity(Gravity.CENTER);
+        footerHint.setPadding(0, dpToPx(10f), 0, 0);
+        card.addView(footerHint);
+
+        // Attach swipe-to-dismiss on the header, subtitle, and footer
+        SwipeDismissTouchListener swipeListener = new SwipeDismissTouchListener();
+        headerRow.setOnTouchListener(swipeListener);
+        subtitleView.setOnTouchListener(swipeListener);
+        footerHint.setOnTouchListener(swipeListener);
+
+        popupRoot.addView(card, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        // Listen for drag completion so the popup restores opacity or closes after drop
+        popupRoot.setOnDragListener(new View.OnDragListener() {
+            @Override
+            public boolean onDrag(View v, DragEvent event) {
+                if (event.getAction() == DragEvent.ACTION_DRAG_ENDED) {
+                    if (popupRoot != null) {
+                        popupRoot.setAlpha(1.0f);
+                    }
+                    if (event.getResult()) {
+                        dismissPopup();
+                    }
+                }
+                return true;
             }
         });
 
+        popupRoot.getViewTreeObserver().addOnWindowFocusChangeListener(
+                new ViewTreeObserver.OnWindowFocusChangeListener() {
+                    @Override
+                    public void onWindowFocusChanged(boolean hasFocus) {
+                        if (hasFocus && popupShown && !clipboardProcessedForCurrentPopup) {
+                            tryProcessClipboardImage(false);
+                        }
+                    }
+                }
+        );
+
+        popupParams = new WindowManager.LayoutParams();
+        popupParams.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+        popupParams.format = PixelFormat.TRANSLUCENT;
+        popupParams.gravity = Gravity.TOP | Gravity.RIGHT;
+        popupParams.width = dpToPx(320f);
+        popupParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        popupParams.x = dpToPx(20f);
+        popupParams.y = dpToPx(46f); // Just below the 41px status bar so it never overlaps BentoBar
+        popupParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        popupParams.setTitle("TopBarDrop PNG Popup");
+
         try {
-            windowManager.addView(overlayContainer, layoutParams);
-            isAdded = true;
+            windowManager.addView(popupRoot, popupParams);
+            popupShown = true;
         } catch (Exception e) {
-            isAdded = false;
+            popupShown = false;
         }
     }
 
     /**
-     * Scans SystemUI's status bar window on Googlebook OS (Android 17) to find
-     * DesktopStatusBarSpacer and places our icon right at its right edge
-     * (immediately to the left of the IME/Bell/Wi-Fi/Battery icons).
+     * Reads ClipboardManager and converts any image (WebP, JPEG, PNG, GIF, BMP, data URI) to PNG.
      */
-    private void scanStatusBarAndPlace() {
-        if (!isAdded || windowManager == null) return;
+    private void tryProcessClipboardImage(boolean isFinalAttempt) {
+        if (clipboardProcessedForCurrentPopup) return;
 
-        int screenW = getScreenWidth();
-        int maxBarH = getStatusBarMaxHeight();
+        ClipboardManager cm = getSystemService(ClipboardManager.class);
+        if (cm == null) {
+            cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        }
+        if (cm == null) return;
 
-        List<AccessibilityWindowInfo> windows;
+        ClipData clip = null;
         try {
-            windows = getWindows();
-        } catch (Exception e) {
-            windows = Collections.emptyList();
-        }
-
-        AccessibilityWindowInfo barWindow = null;
-        Rect barRect = new Rect();
-        for (AccessibilityWindowInfo w : windows) {
-            Rect r = new Rect();
-            w.getBoundsInScreen(r);
-            if (w.getType() == AccessibilityWindowInfo.TYPE_SYSTEM
-                    && r.top == 0
-                    && r.height() >= 1
-                    && r.height() <= maxBarH
-                    && r.width() >= screenW / 2) {
-                barWindow = w;
-                barRect.set(r);
-                break;
-            }
-        }
-
-        if (barWindow != null) {
-            currentBarHeight = barRect.height();
-            Rect freeSpace = findDesktopSpacerOrGap(barWindow, barRect);
-            if (freeSpace != null && freeSpace.width() > dpToPx(60f)) {
-                int gap = dpToPx(8f);
-                currentRightOffsetPx = Math.max(dpToPx(140f), (screenW - freeSpace.right) + gap);
-            }
-        }
-
-        if (!isDragging) {
-            applyCollapsedLayout();
-        }
-    }
-
-    private Rect findDesktopSpacerOrGap(AccessibilityWindowInfo barWindow, Rect barRect) {
-        AccessibilityNodeInfo root = null;
-        try {
-            root = barWindow.getRoot();
+            clip = cm.getPrimaryClip();
         } catch (Exception ignored) {
         }
-        if (root == null) return null;
 
-        Rect spacer = null;
-        List<Rect> parts = new ArrayList<>();
-        ArrayDeque<AccessibilityNodeInfo> stack = new ArrayDeque<>();
-        stack.add(root);
-        int visited = 0;
-
-        while (!stack.isEmpty() && visited < 400) {
-            AccessibilityNodeInfo n = stack.removeLast();
-            visited++;
-            Rect r = new Rect();
-            n.getBoundsInScreen(r);
-            CharSequence viewId = n.getViewIdResourceName();
-            String id = (viewId != null) ? viewId.toString() : "";
-            if (id.endsWith("DesktopStatusBarSpacer")) {
-                spacer = new Rect(r);
+        if (clip == null || clip.getItemCount() == 0) {
+            if (isFinalAttempt) {
+                showPopupError("Clipboard is empty", "Copy an image (WebP, JPEG, PNG) first, then press Ctrl + Shift + D.");
             }
-            boolean labelled = n.isClickable()
-                    || (n.getContentDescription() != null && n.getContentDescription().length() > 0)
-                    || (n.getText() != null && n.getText().length() > 0);
-            if (labelled && r.width() >= 1 && r.width() < (barRect.width() * 6 / 10) && r.height() > 0) {
-                parts.add(new Rect(r));
-            }
-            for (int i = n.getChildCount() - 1; i >= 0; i--) {
-                AccessibilityNodeInfo child = n.getChild(i);
-                if (child != null) stack.add(child);
-            }
+            return;
         }
 
-        if (spacer != null && spacer.width() > 0) {
-            return spacer;
-        }
-        return widestGap(barRect, parts);
-    }
+        ContentResolver resolver = getContentResolver();
+        Bitmap decodedBitmap = null;
+        String baseName = null;
 
-    private Rect widestGap(Rect bar, List<Rect> parts) {
-        Collections.sort(parts, new Comparator<Rect>() {
-            @Override
-            public int compare(Rect a, Rect b) {
-                return Integer.compare(a.left, b.left);
-            }
-        });
-        Rect best = new Rect(bar.left, bar.top, bar.left, bar.bottom);
-        int cursor = bar.left;
-        for (Rect p : parts) {
-            if (p.left > cursor && (p.left - cursor) > best.width()) {
-                best.set(cursor, bar.top, p.left, bar.bottom);
-            }
-            cursor = Math.max(cursor, p.right);
-        }
-        if ((bar.right - cursor) > best.width()) {
-            best.set(cursor, bar.top, bar.right, bar.bottom);
-        }
-        return best;
-    }
-
-    private boolean handleDragEvent(DragEvent event) {
-        int action = event.getAction();
-        switch (action) {
-            case DragEvent.ACTION_DRAG_STARTED:
-                isDragging = true;
-                applyExpandedLayout(false);
-                return true;
-
-            case DragEvent.ACTION_DRAG_ENTERED:
-                isDragging = true;
-                applyExpandedLayout(true);
-                return true;
-
-            case DragEvent.ACTION_DRAG_EXITED:
-                if (isDragging) {
-                    applyExpandedLayout(false);
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            ClipData.Item item = clip.getItemAt(i);
+            Uri uri = item.getUri();
+            if (uri != null) {
+                decodedBitmap = decodeBitmapFromUri(resolver, uri);
+                if (decodedBitmap != null) {
+                    baseName = extractBaseName(queryDisplayName(resolver, uri));
+                    break;
                 }
-                return true;
-
-            case DragEvent.ACTION_DROP:
-                isDragging = false;
-                processDroppedEvent(event);
-                applyCollapsedLayout();
-                return true;
-
-            case DragEvent.ACTION_DRAG_ENDED:
-                isDragging = false;
-                applyCollapsedLayout();
-                return true;
-
-            default:
-                return true;
+            }
+            if (decodedBitmap == null && item.getText() != null) {
+                decodedBitmap = decodeBitmapFromDataUriText(item.getText().toString());
+            }
+            if (decodedBitmap == null && item.getHtmlText() != null) {
+                decodedBitmap = decodeBitmapFromDataUriText(item.getHtmlText());
+            }
         }
+
+        if (decodedBitmap == null) {
+            if (isFinalAttempt) {
+                showPopupError(
+                        "No image found on clipboard",
+                        "Right-click an image (WebP, PNG, JPG) and choose 'Copy image', then press Ctrl + Shift + D."
+                );
+            }
+            return;
+        }
+
+        clipboardProcessedForCurrentPopup = true;
+        saveBitmapAsPngAndPopulatePopup(decodedBitmap, baseName);
     }
 
-    private void applyExpandedLayout(boolean hovering) {
-        if (!isAdded) return;
-        labelView.setText(hovering
-                ? "⬇  Release to save (*_dl)"
-                : "⬇  Drop file/image here (*_dl)");
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
-
-        GradientDrawable pillBg = (GradientDrawable) innerPill.getBackground();
-        pillBg.setColor(hovering ? Color.parseColor("#EE1E8E3E") : Color.parseColor("#EE1967D2"));
-        pillBg.setCornerRadius(dpToPx(18f));
-        pillBg.setStroke(dpToPx(2f), Color.WHITE);
-
-        overlayContainer.setPadding(dpToPx(4f), dpToPx(4f), dpToPx(4f), dpToPx(4f));
-        layoutParams.width = dpToPx(260f);
-        layoutParams.height = dpToPx(84f);
-        layoutParams.x = Math.max(dpToPx(80f), currentRightOffsetPx - dpToPx(40f));
-        layoutParams.y = 0;
-
+    private Bitmap decodeBitmapFromUri(ContentResolver resolver, Uri uri) {
         try {
-            windowManager.updateViewLayout(overlayContainer, layoutParams);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void applyCollapsedLayout() {
-        if (!isAdded) return;
-        labelView.setText("⬇ dl");
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-
-        GradientDrawable pillBg = (GradientDrawable) innerPill.getBackground();
-        pillBg.setColor(Color.parseColor("#CC1A73E8"));
-        pillBg.setCornerRadius(dpToPx(12f));
-        pillBg.setStroke(dpToPx(1f), Color.parseColor("#99FFFFFF"));
-
-        int vPad = Math.max(2, (currentBarHeight - dpToPx(24f)) / 2);
-        overlayContainer.setPadding(0, vPad, 0, vPad);
-        layoutParams.width = dpToPx(54f);
-        layoutParams.height = currentBarHeight;
-        layoutParams.x = currentRightOffsetPx;
-        layoutParams.y = 0;
-
-        try {
-            windowManager.updateViewLayout(overlayContainer, layoutParams);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void processDroppedEvent(DragEvent event) {
-        DragAndDropPermissions perms = acquireDragPermissions(event);
-        try {
-            ClipData clipData = event.getClipData();
-            if (clipData != null && clipData.getItemCount() > 0) {
-                ClipData.Item item = clipData.getItemAt(0);
-                Uri uri = item.getUri();
-                if (uri != null) {
-                    saveDroppedFileWithDlSuffix(uri);
-                } else if (item.getText() != null) {
-                    saveDroppedTextWithDlSuffix(item.getText().toString());
-                }
-            }
-        } finally {
-            if (perms != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                try {
-                    perms.release();
-                } catch (Exception ignored) {
-                }
-            }
-        }
-    }
-
-    private DragAndDropPermissions acquireDragPermissions(DragEvent event) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            if (MainActivity.current != null) {
-                try {
-                    DragAndDropPermissions p = MainActivity.current.requestDragAndDropPermissions(event);
-                    if (p != null) return p;
-                } catch (Throwable ignored) {
-                }
-            }
-            try {
-                java.lang.reflect.Method obtain = DragAndDropPermissions.class.getDeclaredMethod("obtain", DragEvent.class);
-                obtain.setAccessible(true);
-                Object ddp = obtain.invoke(null, event);
-                if (ddp != null) {
-                    for (java.lang.reflect.Method m : ddp.getClass().getDeclaredMethods()) {
-                        if (m.getName().equals("takeTransient")) {
-                            m.setAccessible(true);
-                            m.invoke(ddp);
-                            return (DragAndDropPermissions) ddp;
-                        }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                ImageDecoder.Source source = ImageDecoder.createSource(resolver, uri);
+                return ImageDecoder.decodeBitmap(source, new ImageDecoder.OnHeaderDecodedListener() {
+                    @Override
+                    public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info, ImageDecoder.Source src) {
+                        decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
                     }
-                }
-            } catch (Throwable ignored) {
+                });
             }
+        } catch (Exception ignored) {
+        }
+        try (InputStream in = resolver.openInputStream(uri)) {
+            if (in != null) {
+                return BitmapFactory.decodeStream(in);
+            }
+        } catch (Exception ignored) {
         }
         return null;
     }
 
-    private void saveDroppedFileWithDlSuffix(Uri sourceUri) {
-        try {
-            ContentResolver resolver = getContentResolver();
-            String mimeType = resolver.getType(sourceUri);
-            String originalName = queryDisplayName(resolver, sourceUri);
-            if (originalName == null || originalName.isEmpty()) {
-                originalName = "dropped_file";
+    private Bitmap decodeBitmapFromDataUriText(String text) {
+        if (text == null) return null;
+        int idx = text.indexOf("data:image/");
+        if (idx < 0) return null;
+        int base64Marker = text.indexOf(";base64,", idx);
+        if (base64Marker < 0) return null;
+        int start = base64Marker + ";base64,".length();
+        int end = start;
+        while (end < text.length()) {
+            char c = text.charAt(end);
+            if (c == '"' || c == '\'' || c == ')' || c == ' ' || c == '>' || c == '\n' || c == '\r') {
+                break;
             }
-
-            if (mimeType == null || mimeType.isEmpty()) {
-                int dot = originalName.lastIndexOf('.');
-                if (dot > 0 && dot < originalName.length() - 1) {
-                    String ext = originalName.substring(dot + 1).toLowerCase();
-                    mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
-                }
-                if (mimeType == null || mimeType.isEmpty()) {
-                    mimeType = "application/octet-stream";
-                }
-            }
-
-            String newFileName = buildDlFileName(originalName, mimeType);
-            writeStreamToDownloads(resolver.openInputStream(sourceUri), newFileName, mimeType);
-
-            lastActionMessage = "Saved " + newFileName + " (" + mimeType + ") to Downloads";
-            Toast.makeText(this, "✓ " + lastActionMessage, Toast.LENGTH_LONG).show();
-            notifyActivityStatus();
-        } catch (Exception e) {
-            lastActionMessage = "Error saving file: " + e.getMessage();
-            Toast.makeText(this, "⚠ " + lastActionMessage, Toast.LENGTH_LONG).show();
-            notifyActivityStatus();
-        }
-    }
-
-    private void saveDroppedTextWithDlSuffix(String content) {
-        try {
-            String newFileName = "dropped_text_dl.txt";
-            byte[] bytes = content.getBytes("UTF-8");
-            writeStreamToDownloads(new ByteArrayInputStream(bytes), newFileName, "text/plain");
-            lastActionMessage = "Saved " + newFileName + " (text/plain) to Downloads";
-            Toast.makeText(this, "✓ " + lastActionMessage, Toast.LENGTH_LONG).show();
-            notifyActivityStatus();
-        } catch (Exception e) {
-            Toast.makeText(this, "Error saving text: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void notifyActivityStatus() {
-        if (MainActivity.current != null) {
-            MainActivity.current.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    MainActivity.current.refreshUiState();
-                }
-            });
-        }
-    }
-
-    private void writeStreamToDownloads(InputStream input, String fileName, String mimeType) throws Exception {
-        if (input == null) {
-            throw new IllegalArgumentException("Cannot read dropped file stream");
+            end++;
         }
         try {
+            byte[] raw = Base64.decode(text.substring(start, end), Base64.DEFAULT);
+            return BitmapFactory.decodeByteArray(raw, 0, raw.length);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void saveBitmapAsPngAndPopulatePopup(Bitmap bitmap, String baseName) {
+        try {
+            String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
+            String cleanBase = (baseName != null && !baseName.isEmpty())
+                    ? baseName + "_dl"
+                    : "clipboard_" + timestamp + "_dl";
+            String pngFileName = cleanBase + ".png";
+
+            Uri savedUri;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
                 values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
 
-                Uri destUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (destUri == null) {
-                    throw new IllegalStateException("Failed to create Downloads entry");
+                savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (savedUri == null) {
+                    throw new IllegalStateException("Could not create PNG in Downloads");
                 }
-                try (OutputStream output = getContentResolver().openOutputStream(destUri)) {
-                    copyStream(input, output);
+                try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
                 }
             } else {
-                File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!downloadsDir.exists()) {
-                    downloadsDir.mkdirs();
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                File outFile = new File(dir, pngFileName);
+                try (OutputStream out = new FileOutputStream(outFile)) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
                 }
-                File outFile = new File(downloadsDir, fileName);
-                try (OutputStream output = new FileOutputStream(outFile)) {
-                    copyStream(input, output);
+                savedUri = Uri.fromFile(outFile);
+            }
+
+            currentPngUri = savedUri;
+            currentPngFileName = pngFileName;
+
+            headerTitleView.setText("✓ Saved PNG: " + pngFileName);
+            subtitleView.setText(bitmap.getWidth() + " × " + bitmap.getHeight() + " px · Downloaded to Downloads");
+            previewImageView.setImageBitmap(bitmap);
+            dragHintView.setText("⬇ Click & Drag this PNG into any app");
+
+            lastActionMessage = "Saved " + pngFileName + " (" + bitmap.getWidth() + "×" + bitmap.getHeight() + ") to Downloads";
+            notifyActivityStatus();
+        } catch (Exception e) {
+            showPopupError("Failed to save PNG", e.getMessage());
+        }
+    }
+
+    private void showPopupError(String title, String detail) {
+        clipboardProcessedForCurrentPopup = true;
+        if (headerTitleView != null) headerTitleView.setText("⚠ " + title);
+        if (subtitleView != null) subtitleView.setText(detail != null ? detail : "");
+        if (dragHintView != null) dragHintView.setText("Right-click or swipe to dismiss");
+        lastActionMessage = title + ": " + detail;
+        notifyActivityStatus();
+    }
+
+    /**
+     * Enables immediate click-and-drag (without needing a long-press) on the PNG preview box:
+     * pressing the primary button/finger and moving > 6px starts global drag-and-drop of the saved PNG.
+     */
+    private void setupImmediateClickAndDragOnPreview(final View targetView) {
+        targetView.setOnTouchListener(new View.OnTouchListener() {
+            private float downX;
+            private float downY;
+            private boolean dragStarted;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
+                    dismissPopup();
+                    return true;
+                }
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = event.getX();
+                        downY = event.getY();
+                        dragStarted = false;
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        if (!dragStarted && currentPngUri != null) {
+                            float dx = event.getX() - downX;
+                            float dy = event.getY() - downY;
+                            if (Math.hypot(dx, dy) > dpToPx(6f)) {
+                                dragStarted = true;
+                                startPngDrag(v);
+                            }
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+    }
+
+    private void startPngDrag(View v) {
+        if (currentPngUri == null) return;
+        try {
+            ClipData clipData = ClipData.newUri(getContentResolver(), currentPngFileName, currentPngUri);
+            View shadowTarget = (previewImageView != null && previewImageView.getDrawable() != null)
+                    ? previewImageView
+                    : v;
+            View.DragShadowBuilder shadow = new View.DragShadowBuilder(shadowTarget);
+            int flags = View.DRAG_FLAG_GLOBAL | View.DRAG_FLAG_GLOBAL_URI_READ;
+            if (popupRoot != null) {
+                popupRoot.setAlpha(0.35f);
+            }
+            v.startDragAndDrop(clipData, shadow, null, flags);
+        } catch (Exception e) {
+            Toast.makeText(this, "Drag error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * Horizontal swipe-to-dismiss listener for the notification card header/footer.
+     */
+    private class SwipeDismissTouchListener implements View.OnTouchListener {
+        private float startRawX;
+        private int initialParamX;
+
+        @Override
+        public boolean onTouch(View v, MotionEvent event) {
+            if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
+                dismissPopup();
+                return true;
+            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startRawX = event.getRawX();
+                    initialParamX = (popupParams != null) ? popupParams.x : dpToPx(20f);
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (popupShown && popupParams != null && popupRoot != null) {
+                        float deltaX = event.getRawX() - startRawX;
+                        // Gravity.RIGHT: moving right decreases x; moving left increases x
+                        popupParams.x = Math.round(initialParamX - deltaX);
+                        float fade = Math.max(0.15f, 1f - (Math.abs(deltaX) / dpToPx(180f)));
+                        popupRoot.setAlpha(fade);
+                        try {
+                            windowManager.updateViewLayout(popupRoot, popupParams);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    float totalDeltaX = event.getRawX() - startRawX;
+                    if (Math.abs(totalDeltaX) > dpToPx(64f)) {
+                        dismissPopup();
+                    } else if (popupShown && popupParams != null && popupRoot != null) {
+                        popupParams.x = initialParamX;
+                        popupRoot.setAlpha(1.0f);
+                        try {
+                            windowManager.updateViewLayout(popupRoot, popupParams);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Root view that intercepts Right-Click (BUTTON_SECONDARY) and Escape key anywhere in the popup
+     * to immediately dismiss the notification window.
+     */
+    private class PopupRootView extends FrameLayout {
+        public PopupRootView(AccessibilityService context) {
+            super(context);
+        }
+
+        @Override
+        public boolean dispatchGenericMotionEvent(MotionEvent ev) {
+            if (ev != null) {
+                if ((ev.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0
+                        || (ev.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS
+                            && ev.getActionButton() == MotionEvent.BUTTON_SECONDARY)) {
+                    dismissPopup();
+                    return true;
                 }
             }
-        } finally {
-            input.close();
+            return super.dispatchGenericMotionEvent(ev);
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent ev) {
+            if (ev != null && (ev.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
+                dismissPopup();
+                return true;
+            }
+            return super.dispatchTouchEvent(ev);
+        }
+
+        @Override
+        public boolean dispatchKeyEvent(KeyEvent event) {
+            if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dismissPopup();
+                return true;
+            }
+            return super.dispatchKeyEvent(event);
         }
     }
 
-    private static void copyStream(InputStream in, OutputStream out) throws Exception {
-        byte[] buffer = new byte[8192];
-        int read;
-        while ((read = in.read(buffer)) != -1) {
-            out.write(buffer, 0, read);
+    public void dismissPopup() {
+        if (popupShown && popupRoot != null && windowManager != null) {
+            try {
+                windowManager.removeViewImmediate(popupRoot);
+            } catch (Exception ignored) {
+            }
         }
-        out.flush();
+        popupShown = false;
+        popupRoot = null;
     }
 
-    private static String buildDlFileName(String originalName, String mimeType) {
-        int dotIndex = originalName.lastIndexOf('.');
-        if (dotIndex > 0) {
-            String base = originalName.substring(0, dotIndex);
-            String ext = originalName.substring(dotIndex);
-            return base + "_dl" + ext;
-        }
-        String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType);
-        if (ext != null && !ext.isEmpty()) {
-            return originalName + "_dl." + ext;
-        }
-        return originalName + "_dl";
+    private static String extractBaseName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) return null;
+        int dot = fileName.lastIndexOf('.');
+        String base = (dot > 0) ? fileName.substring(0, dot) : fileName;
+        base = base.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return base.isEmpty() ? null : base;
     }
 
     private static String queryDisplayName(ContentResolver resolver, Uri uri) {
@@ -575,22 +662,15 @@ public class TopBarDropService extends AccessibilityService {
         return uri.getLastPathSegment();
     }
 
-    private int getScreenWidth() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowManager != null) {
-            WindowMetrics wm = windowManager.getCurrentWindowMetrics();
-            return wm.getBounds().width();
+    private void notifyActivityStatus() {
+        if (MainActivity.current != null) {
+            MainActivity.current.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    MainActivity.current.refreshUiState();
+                }
+            });
         }
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        return dm.widthPixels;
-    }
-
-    private int getStatusBarMaxHeight() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowManager != null) {
-            WindowMetrics wm = windowManager.getCurrentWindowMetrics();
-            int inset = wm.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top;
-            if (inset > 0) return inset + 4;
-        }
-        return dpToPx(48f) + 4;
     }
 
     private int dpToPx(float dp) {
@@ -603,25 +683,15 @@ public class TopBarDropService extends AccessibilityService {
 
     @Override
     public boolean onUnbind(Intent intent) {
-        cleanupOverlay();
+        dismissPopup();
+        instance = null;
         return super.onUnbind(intent);
     }
 
     @Override
     public void onDestroy() {
-        cleanupOverlay();
-        super.onDestroy();
-    }
-
-    private void cleanupOverlay() {
+        dismissPopup();
         instance = null;
-        handler.removeCallbacksAndMessages(null);
-        if (isAdded && overlayContainer != null && windowManager != null) {
-            try {
-                windowManager.removeViewImmediate(overlayContainer);
-            } catch (Exception ignored) {
-            }
-            isAdded = false;
-        }
+        super.onDestroy();
     }
 }

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TopBarDrop</string>
-    <string name="a11y_label">TopBarDrop</string>
-    <string name="a11y_summary">Places a file drop-zone icon in your Googlebook status bar (*_dl)</string>
-    <string name="a11y_description">Draws a compact drop-zone icon in the empty space of the Googlebook top status bar (to the left of the system icons). Reads only the status bar layout to position the icon; never reads other apps or goes online.</string>
+    <string name="a11y_label">TopBarDrop (Ctrl+Shift+D Clipboard PNG)</string>
+    <string name="a11y_summary">Press Ctrl+Shift+D to save clipboard images (WebP, JPEG, etc.) as PNG and pop up a draggable card</string>
+    <string name="a11y_description">Listens for the Ctrl+Shift+D shortcut to convert any image on the clipboard into a PNG in Downloads and display a floating notification card where you can drag the PNG or right-click/swipe to dismiss. Does not draw on the top status bar so it never conflicts with BentoBar.</string>
 </resources>

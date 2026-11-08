@@ -3,13 +3,16 @@ package com.example.topbardrop;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -19,7 +22,7 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.TypedValue;
-import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
@@ -30,10 +33,6 @@ import android.widget.Toast;
 import java.io.OutputStream;
 import java.util.List;
 
-/**
- * Setup & test window for TopBarDrop, using the exact same Googlebook Accessibility
- * setup flow as BentoBar (App Info -> Allow restricted settings -> Accessibility Settings).
- */
 public class MainActivity extends Activity {
 
     public static volatile MainActivity current;
@@ -53,7 +52,7 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("TopBarDrop for Googlebook (v3.0)");
+        title.setText("Clipboard PNG Drop (Ctrl + Shift + D)");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.parseColor("#202124"));
@@ -67,42 +66,40 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
         bannerLp.topMargin = dpToPx(12f);
-        bannerLp.bottomMargin = dpToPx(16f);
+        bannerLp.bottomMargin = dpToPx(14f);
         root.addView(statusBanner, bannerLp);
 
-        TextView instructions = new TextView(this);
-        instructions.setText(
-                "How Googlebook status bar apps (like BentoBar) work:\n" +
-                "Googlebook OS only allows apps to place icons directly on the top status bar (y = 0, inside DesktopStatusBarSpacer) via an Accessibility Service.\n\n" +
-                "Setup Steps (same as BentoBar):\n" +
-                "1. Click 'Open Accessibility Settings' below and tap TopBarDrop's switch. If Android shows 'Restricted setting', tap OK.\n" +
-                "2. Click 'Open App Info' below → tap ⋮ in the top-right corner → 'Allow restricted settings' and enter your PIN.\n" +
-                "3. Click 'Open Accessibility Settings' again and switch TopBarDrop ON."
+        TextView info = new TextView(this);
+        info.setText(
+                "• No top-bar icon is drawn, so it never conflicts with BentoBar.\n" +
+                "• Copy any image (WebP, JPEG, PNG, screenshot) anywhere on your Googlebook and press Ctrl + Shift + D.\n" +
+                "• It converts the clipboard image to a lossless .png in Downloads and pops up a floating card.\n" +
+                "• Click & drag the PNG out of the popup into any app, or dismiss the popup by right-clicking it or swiping its header/footer."
         );
-        instructions.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        instructions.setTextColor(Color.parseColor("#3C4043"));
-        root.addView(instructions);
+        info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        info.setTextColor(Color.parseColor("#3C4043"));
+        root.addView(info);
 
-        LinearLayout btnRow = new LinearLayout(this);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+        LinearLayout setupRow = new LinearLayout(this);
+        setupRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams setupLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        rowLp.topMargin = dpToPx(16f);
+        setupLp.topMargin = dpToPx(16f);
 
         Button a11yBtn = new Button(this);
-        a11yBtn.setText("Open Accessibility Settings");
+        a11yBtn.setText("Accessibility Settings");
         a11yBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 openAccessibilitySettings();
             }
         });
-        btnRow.addView(a11yBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        setupRow.addView(a11yBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         Button appInfoBtn = new Button(this);
-        appInfoBtn.setText("Open App Info (⋮)");
+        appInfoBtn.setText("App Info (⋮)");
         appInfoBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -111,55 +108,68 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         infoLp.leftMargin = dpToPx(12f);
-        btnRow.addView(appInfoBtn, infoLp);
+        setupRow.addView(appInfoBtn, infoLp);
+        root.addView(setupRow, setupLp);
 
-        root.addView(btnRow, rowLp);
+        // Built-in test buttons: 1) Put a real WebP image onto the clipboard, 2) Test the popup
+        LinearLayout testRow = new LinearLayout(this);
+        testRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams testLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        testLp.topMargin = dpToPx(12f);
+
+        Button copyWebpBtn = new Button(this);
+        copyWebpBtn.setText("1. Copy Sample WebP to Clipboard");
+        copyWebpBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copySampleWebpToClipboard();
+            }
+        });
+        testRow.addView(copyWebpBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button triggerBtn = new Button(this);
+        triggerBtn.setText("2. Test Popup (Ctrl+Shift+D)");
+        triggerBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (TopBarDropService.instance != null) {
+                    TopBarDropService.instance.triggerClipboardToPngPopup();
+                } else {
+                    Toast.makeText(MainActivity.this, "Turn on TopBarDrop in Accessibility Settings first!", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+        LinearLayout.LayoutParams trigLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        trigLp.leftMargin = dpToPx(12f);
+        testRow.addView(triggerBtn, trigLp);
+        root.addView(testRow, testLp);
 
         lastActionView = new TextView(this);
         lastActionView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         lastActionView.setTextColor(Color.parseColor("#1A73E8"));
-        lastActionView.setPadding(0, dpToPx(16f), 0, dpToPx(8f));
+        lastActionView.setPadding(0, dpToPx(16f), 0, 0);
         root.addView(lastActionView);
-
-        // Built-in draggable sample card so the user can test dragging to the top status bar icon
-        TextView dragCard = new TextView(this);
-        dragCard.setText("🖼  Long-press & drag me up to the '⬇ dl' icon in the top status bar!\n(Test file: sample_photo.png → sample_photo_dl.png)");
-        dragCard.setTextColor(Color.WHITE);
-        dragCard.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
-        dragCard.setGravity(Gravity.CENTER);
-        int cardPad = dpToPx(18f);
-        dragCard.setPadding(cardPad, cardPad, cardPad, cardPad);
-
-        GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setCornerRadius(dpToPx(16f));
-        cardBg.setColor(Color.parseColor("#1A73E8"));
-        dragCard.setBackground(cardBg);
-
-        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        cardLp.topMargin = dpToPx(12f);
-        root.addView(dragCard, cardLp);
-
-        dragCard.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                Uri sampleUri = createSampleImageUri();
-                if (sampleUri == null) {
-                    Toast.makeText(MainActivity.this, "Could not create sample image", Toast.LENGTH_SHORT).show();
-                    return false;
-                }
-                ClipData clipData = ClipData.newUri(getContentResolver(), "sample_photo.png", sampleUri);
-                View.DragShadowBuilder shadow = new View.DragShadowBuilder(v);
-                int flags = View.DRAG_FLAG_GLOBAL | View.DRAG_FLAG_GLOBAL_URI_READ;
-                v.startDragAndDrop(clipData, shadow, null, flags);
-                return true;
-            }
-        });
 
         setContentView(root);
         refreshUiState();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event != null
+                && event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getKeyCode() == KeyEvent.KEYCODE_D
+                && event.isCtrlPressed()
+                && event.isShiftPressed()) {
+            if (TopBarDropService.instance != null) {
+                TopBarDropService.instance.triggerClipboardToPngPopup();
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     @Override
@@ -192,14 +202,56 @@ public class MainActivity extends Activity {
         if (active) {
             bg.setColor(Color.parseColor("#E6F4EA"));
             statusBanner.setTextColor(Color.parseColor("#137333"));
-            statusBanner.setText("✓ LIVE IN STATUS BAR — Look at the top status bar (to the left of the system/Wi-Fi/battery icons) for the blue '⬇ dl' icon! Drag any file or image to it.");
+            statusBanner.setText("✓ READY — Press Ctrl + Shift + D anytime to save the clipboard image as a PNG and open the drag-and-drop popup.");
         } else {
             bg.setColor(Color.parseColor("#FCE8E6"));
             statusBanner.setTextColor(Color.parseColor("#C5221F"));
-            statusBanner.setText("⚠ Accessibility Service is OFF — Follow the 3 steps below to turn TopBarDrop on in your Googlebook status bar.");
+            statusBanner.setText("⚠ Service OFF — Turn on TopBarDrop in Accessibility Settings so Ctrl + Shift + D works across all apps.");
         }
         statusBanner.setBackground(bg);
         lastActionView.setText("Last status: " + TopBarDropService.lastActionMessage);
+    }
+
+    private void copySampleWebpToClipboard() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, "sample_graphic.webp");
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/webp");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
+
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri != null) {
+                    Bitmap bmp = Bitmap.createBitmap(480, 280, Bitmap.Config.ARGB_8888);
+                    Canvas canvas = new Canvas(bmp);
+                    Paint bgPaint = new Paint();
+                    bgPaint.setShader(new LinearGradient(0, 0, 480, 280,
+                            Color.parseColor("#1A73E8"), Color.parseColor("#9334E6"), Shader.TileMode.CLAMP));
+                    canvas.drawRect(0, 0, 480, 280, bgPaint);
+
+                    Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    textPaint.setColor(Color.WHITE);
+                    textPaint.setTypeface(Typeface.DEFAULT_BOLD);
+                    textPaint.setTextSize(34f);
+                    canvas.drawText("WebP → PNG Test", 95f, 130f, textPaint);
+                    textPaint.setTextSize(22f);
+                    canvas.drawText("Press Ctrl + Shift + D!", 125f, 175f, textPaint);
+
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        bmp.compress(Bitmap.CompressFormat.WEBP, 90, out);
+                    }
+
+                    ClipboardManager cm = getSystemService(ClipboardManager.class);
+                    if (cm != null) {
+                        ClipData clip = ClipData.newUri(getContentResolver(), "sample_graphic.webp", uri);
+                        cm.setPrimaryClip(clip);
+                        Toast.makeText(this, "Copied sample_graphic.webp to clipboard! Now press Ctrl + Shift + D.", Toast.LENGTH_LONG).show();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Error copying sample WebP: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private boolean isAccessibilityServiceEnabled() {
@@ -236,34 +288,6 @@ public class MainActivity extends Activity {
                 Uri.fromParts("package", getPackageName(), null)
         );
         startActivity(intent);
-    }
-
-    private Uri createSampleImageUri() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Images.Media.DISPLAY_NAME, "sample_photo.png");
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
-
-                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                if (uri != null) {
-                    Bitmap bmp = Bitmap.createBitmap(320, 200, Bitmap.Config.ARGB_8888);
-                    Canvas canvas = new Canvas(bmp);
-                    canvas.drawColor(Color.parseColor("#1A73E8"));
-                    Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    p.setColor(Color.WHITE);
-                    p.setTextSize(32f);
-                    canvas.drawText("sample_photo.png", 28f, 110f, p);
-                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out);
-                    }
-                    return uri;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
     }
 
     private int dpToPx(float dp) {
