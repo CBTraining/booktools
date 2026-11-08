@@ -185,8 +185,14 @@ public class TopBarDropService extends AccessibilityService {
         headerRow.setOrientation(LinearLayout.HORIZONTAL);
         headerRow.setGravity(Gravity.CENTER_VERTICAL);
 
+        ImageView headerIcon = new ImageView(this);
+        headerIcon.setImageResource(R.drawable.ic_drop_arrow);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(20f), dpToPx(20f));
+        iconLp.rightMargin = dpToPx(8f);
+        headerRow.addView(headerIcon, iconLp);
+
         headerTitleView = new TextView(this);
-        headerTitleView.setText("⏳ Reading clipboard image...");
+        headerTitleView.setText("Reading clipboard image...");
         headerTitleView.setTextColor(Color.WHITE);
         headerTitleView.setTypeface(Typeface.DEFAULT_BOLD);
         headerTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);

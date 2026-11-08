@@ -51,12 +51,29 @@ public class MainActivity extends Activity {
         int pad = dpToPx(24f);
         root.setPadding(pad, pad, pad, pad);
 
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+        android.widget.ImageView appIcon = new android.widget.ImageView(this);
+        appIcon.setImageResource(R.drawable.ic_drop_arrow);
+        int iconPad = dpToPx(6f);
+        appIcon.setPadding(iconPad, iconPad, iconPad, iconPad);
+        GradientDrawable iconBg = new GradientDrawable();
+        iconBg.setShape(GradientDrawable.OVAL);
+        iconBg.setColor(Color.parseColor("#18191B"));
+        appIcon.setBackground(iconBg);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(34f), dpToPx(34f));
+        iconLp.rightMargin = dpToPx(12f);
+        titleRow.addView(appIcon, iconLp);
+
         TextView title = new TextView(this);
         title.setText("Clipboard PNG Drop (Ctrl + Shift + D)");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.parseColor("#202124"));
-        root.addView(title);
+        titleRow.addView(title);
+        root.addView(titleRow);
 
         statusBanner = new TextView(this);
         statusBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
