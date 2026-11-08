@@ -1,13 +1,11 @@
 package com.example.topbardrop;
 
-import android.Manifest;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.content.ClipData;
-import android.content.ContentResolver;
+import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -19,145 +17,132 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.util.TypedValue;
-import android.view.DragAndDropPermissions;
-import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowManager;
-import android.webkit.MimeTypeMap;
+import android.view.accessibility.AccessibilityManager;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
 
 /**
- * Permission-safe TopBarDrop Activity:
- * - Uses zero restricted permissions (no SYSTEM_ALERT_WINDOW).
- * - Docks near the top-right on Android Desktop / Freeform window mode.
- * - Starts TopBarDropService to place an icon in the top status bar.
- * - Expands its drop zone automatically when any file/image drag starts
- *   (DragEvent.ACTION_DRAG_STARTED) and uses Activity.requestDragAndDropPermissions
- *   to safely read files dragged from any external app (Files, Chrome, Gallery),
- *   saving them immediately into Downloads as "<original_name>_dl.<ext>".
+ * Setup & test window for TopBarDrop, using the exact same Googlebook Accessibility
+ * setup flow as BentoBar (App Info -> Allow restricted settings -> Accessibility Settings).
  */
 public class MainActivity extends Activity {
 
-    private LinearLayout rootLayout;
-    private LinearLayout dropZoneCard;
-    private TextView dropIconText;
-    private TextView dropZoneTitle;
-    private TextView dropZoneSubtitle;
-    private TextView lastSavedLog;
+    public static volatile MainActivity current;
+
+    private TextView statusBanner;
+    private TextView lastActionView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        current = this;
 
-        // Position window near the top-right on desktop/freeform environments
-        try {
-            WindowManager.LayoutParams wlp = getWindow().getAttributes();
-            wlp.gravity = Gravity.TOP | Gravity.END;
-            getWindow().setAttributes(wlp);
-        } catch (Exception ignored) {
-        }
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.parseColor("#F8F9FA"));
+        int pad = dpToPx(24f);
+        root.setPadding(pad, pad, pad, pad);
 
-        requestNotificationPermissionIfNeeded();
-        startTopBarStatusService();
+        TextView title = new TextView(this);
+        title.setText("TopBarDrop for Googlebook (v3.0)");
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.parseColor("#202124"));
+        root.addView(title);
 
-        buildMaterialUi();
-        handleIncomingShareIntent(getIntent());
-    }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        handleIncomingShareIntent(intent);
-    }
-
-    private void buildMaterialUi() {
-        rootLayout = new LinearLayout(this);
-        rootLayout.setOrientation(LinearLayout.VERTICAL);
-        rootLayout.setBackgroundColor(Color.parseColor("#F8F9FA"));
-        int pad = dpToPx(14f);
-        rootLayout.setPadding(pad, pad, pad, pad);
-
-        // Top Bar Compact Drop Target (expands when a file is dragged)
-        dropZoneCard = new LinearLayout(this);
-        dropZoneCard.setOrientation(LinearLayout.VERTICAL);
-        dropZoneCard.setGravity(Gravity.CENTER);
-        int zonePad = dpToPx(14f);
-        dropZoneCard.setPadding(zonePad, zonePad, zonePad, zonePad);
-
-        GradientDrawable zoneBg = new GradientDrawable();
-        zoneBg.setShape(GradientDrawable.RECTANGLE);
-        zoneBg.setCornerRadius(dpToPx(18f));
-        zoneBg.setColor(Color.parseColor("#1A73E8")); // Material Primary Blue
-        zoneBg.setStroke(dpToPx(2f), Color.parseColor("#8AB4F8"));
-        dropZoneCard.setBackground(zoneBg);
-
-        dropIconText = new TextView(this);
-        dropIconText.setText("⬇  TopBarDrop (*_dl)");
-        dropIconText.setTextColor(Color.WHITE);
-        dropIconText.setTypeface(Typeface.DEFAULT_BOLD);
-        dropIconText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
-        dropIconText.setGravity(Gravity.CENTER);
-        dropZoneCard.addView(dropIconText);
-
-        dropZoneTitle = new TextView(this);
-        dropZoneTitle.setText("Drag any file or image here");
-        dropZoneTitle.setTextColor(Color.parseColor("#E8F0FE"));
-        dropZoneTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        dropZoneTitle.setGravity(Gravity.CENTER);
-        dropZoneTitle.setPadding(0, dpToPx(4f), 0, 0);
-        dropZoneCard.addView(dropZoneTitle);
-
-        dropZoneSubtitle = new TextView(this);
-        dropZoneSubtitle.setText("Release to auto-detect file type & download as <name>_dl.<ext>");
-        dropZoneSubtitle.setTextColor(Color.WHITE);
-        dropZoneSubtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        dropZoneSubtitle.setGravity(Gravity.CENTER);
-        dropZoneSubtitle.setPadding(0, dpToPx(6f), 0, 0);
-        dropZoneSubtitle.setVisibility(View.GONE); // Expands into view during drag!
-        dropZoneCard.addView(dropZoneSubtitle);
-
-        LinearLayout.LayoutParams zoneLp = new LinearLayout.LayoutParams(
+        statusBanner = new TextView(this);
+        statusBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        statusBanner.setPadding(dpToPx(14f), dpToPx(12f), dpToPx(14f), dpToPx(12f));
+        LinearLayout.LayoutParams bannerLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        rootLayout.addView(dropZoneCard, zoneLp);
+        bannerLp.topMargin = dpToPx(12f);
+        bannerLp.bottomMargin = dpToPx(16f);
+        root.addView(statusBanner, bannerLp);
 
-        // Status log showing the most recently downloaded *_dl file
-        lastSavedLog = new TextView(this);
-        lastSavedLog.setText("✓ Safe Mode active (no restricted permissions). Top bar icon running.");
-        lastSavedLog.setTextColor(Color.parseColor("#1E8E3E"));
-        lastSavedLog.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        lastSavedLog.setPadding(dpToPx(4f), dpToPx(10f), dpToPx(4f), dpToPx(10f));
-        rootLayout.addView(lastSavedLog);
+        TextView instructions = new TextView(this);
+        instructions.setText(
+                "How Googlebook status bar apps (like BentoBar) work:\n" +
+                "Googlebook OS only allows apps to place icons directly on the top status bar (y = 0, inside DesktopStatusBarSpacer) via an Accessibility Service.\n\n" +
+                "Setup Steps (same as BentoBar):\n" +
+                "1. Click 'Open Accessibility Settings' below and tap TopBarDrop's switch. If Android shows 'Restricted setting', tap OK.\n" +
+                "2. Click 'Open App Info' below → tap ⋮ in the top-right corner → 'Allow restricted settings' and enter your PIN.\n" +
+                "3. Click 'Open Accessibility Settings' again and switch TopBarDrop ON."
+        );
+        instructions.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        instructions.setTextColor(Color.parseColor("#3C4043"));
+        root.addView(instructions);
 
-        // Built-in test drag source so the user can test inside or across windows immediately
-        TextView sampleDragPill = new TextView(this);
-        sampleDragPill.setText("🖼  Test: Long-press & drag me into the blue box above (sample_photo.png)");
-        sampleDragPill.setTextColor(Color.parseColor("#174EA6"));
-        sampleDragPill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        sampleDragPill.setGravity(Gravity.CENTER);
-        int pillPad = dpToPx(10f);
-        sampleDragPill.setPadding(pillPad, pillPad, pillPad, pillPad);
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        rowLp.topMargin = dpToPx(16f);
 
-        GradientDrawable pillBg = new GradientDrawable();
-        pillBg.setCornerRadius(dpToPx(12f));
-        pillBg.setColor(Color.parseColor("#E8F0FE"));
-        pillBg.setStroke(dpToPx(1f), Color.parseColor("#1A73E8"));
-        sampleDragPill.setBackground(pillBg);
+        Button a11yBtn = new Button(this);
+        a11yBtn.setText("Open Accessibility Settings");
+        a11yBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openAccessibilitySettings();
+            }
+        });
+        btnRow.addView(a11yBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        sampleDragPill.setOnLongClickListener(new View.OnLongClickListener() {
+        Button appInfoBtn = new Button(this);
+        appInfoBtn.setText("Open App Info (⋮)");
+        appInfoBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openAppInfo();
+            }
+        });
+        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        infoLp.leftMargin = dpToPx(12f);
+        btnRow.addView(appInfoBtn, infoLp);
+
+        root.addView(btnRow, rowLp);
+
+        lastActionView = new TextView(this);
+        lastActionView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        lastActionView.setTextColor(Color.parseColor("#1A73E8"));
+        lastActionView.setPadding(0, dpToPx(16f), 0, dpToPx(8f));
+        root.addView(lastActionView);
+
+        // Built-in draggable sample card so the user can test dragging to the top status bar icon
+        TextView dragCard = new TextView(this);
+        dragCard.setText("🖼  Long-press & drag me up to the '⬇ dl' icon in the top status bar!\n(Test file: sample_photo.png → sample_photo_dl.png)");
+        dragCard.setTextColor(Color.WHITE);
+        dragCard.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        dragCard.setGravity(Gravity.CENTER);
+        int cardPad = dpToPx(18f);
+        dragCard.setPadding(cardPad, cardPad, cardPad, cardPad);
+
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setCornerRadius(dpToPx(16f));
+        cardBg.setColor(Color.parseColor("#1A73E8"));
+        dragCard.setBackground(cardBg);
+
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        cardLp.topMargin = dpToPx(12f);
+        root.addView(dragCard, cardLp);
+
+        dragCard.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
                 Uri sampleUri = createSampleImageUri();
@@ -172,240 +157,85 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
-        rootLayout.addView(sampleDragPill);
 
-        // Listen for drag events on the entire window so dragging anywhere near it expands the target
-        View.OnDragListener dragListener = new View.OnDragListener() {
-            @Override
-            public boolean onDrag(View v, DragEvent event) {
-                return handleDragEvent(event);
-            }
-        };
-        rootLayout.setOnDragListener(dragListener);
-        dropZoneCard.setOnDragListener(dragListener);
-
-        setContentView(rootLayout);
+        setContentView(root);
+        refreshUiState();
     }
 
-    private boolean handleDragEvent(DragEvent event) {
-        switch (event.getAction()) {
-            case DragEvent.ACTION_DRAG_STARTED:
-                setDropZoneExpanded(true, false);
-                return true;
+    @Override
+    protected void onResume() {
+        super.onResume();
+        current = this;
+        refreshUiState();
+    }
 
-            case DragEvent.ACTION_DRAG_ENTERED:
-                setDropZoneExpanded(true, true);
-                return true;
-
-            case DragEvent.ACTION_DRAG_EXITED:
-                setDropZoneExpanded(true, false);
-                return true;
-
-            case DragEvent.ACTION_DROP:
-                DragAndDropPermissions perms = null;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    try {
-                        perms = requestDragAndDropPermissions(event);
-                    } catch (Exception ignored) {
-                    }
-                }
-                try {
-                    ClipData clipData = event.getClipData();
-                    if (clipData != null && clipData.getItemCount() > 0) {
-                        ClipData.Item item = clipData.getItemAt(0);
-                        Uri uri = item.getUri();
-                        if (uri != null) {
-                            saveDroppedFileWithDlSuffix(uri);
-                        } else if (item.getText() != null) {
-                            saveDroppedTextWithDlSuffix(item.getText().toString());
-                        }
-                    }
-                } finally {
-                    if (perms != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        perms.release();
-                    }
-                }
-                setDropZoneExpanded(false, false);
-                return true;
-
-            case DragEvent.ACTION_DRAG_ENDED:
-                setDropZoneExpanded(false, false);
-                return true;
-
-            default:
-                return true;
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            refreshUiState();
         }
     }
 
-    private void setDropZoneExpanded(boolean expanded, boolean hovering) {
-        GradientDrawable bg = (GradientDrawable) dropZoneCard.getBackground();
-        if (expanded) {
-            dropZoneSubtitle.setVisibility(View.VISIBLE);
-            int padV = dpToPx(26f);
-            int padH = dpToPx(18f);
-            dropZoneCard.setPadding(padH, padV, padH, padV);
-            if (hovering) {
-                bg.setColor(Color.parseColor("#1E8E3E")); // Material Green when hovering
-                dropIconText.setText("⬇  Release to Download (*_dl)");
-                dropZoneTitle.setText("File detected — release mouse/finger now!");
-            } else {
-                bg.setColor(Color.parseColor("#185ABC")); // Deeper Material Blue when expanded
-                dropIconText.setText("⬇  Drop File Here (*_dl)");
-                dropZoneTitle.setText("Drop Zone Expanded");
-            }
+    @Override
+    protected void onDestroy() {
+        if (current == this) {
+            current = null;
+        }
+        super.onDestroy();
+    }
+
+    public void refreshUiState() {
+        boolean active = isAccessibilityServiceEnabled();
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dpToPx(12f));
+        if (active) {
+            bg.setColor(Color.parseColor("#E6F4EA"));
+            statusBanner.setTextColor(Color.parseColor("#137333"));
+            statusBanner.setText("✓ LIVE IN STATUS BAR — Look at the top status bar (to the left of the system/Wi-Fi/battery icons) for the blue '⬇ dl' icon! Drag any file or image to it.");
         } else {
-            dropZoneSubtitle.setVisibility(View.GONE);
-            int pad = dpToPx(14f);
-            dropZoneCard.setPadding(pad, pad, pad, pad);
-            bg.setColor(Color.parseColor("#1A73E8"));
-            dropIconText.setText("⬇  TopBarDrop (*_dl)");
-            dropZoneTitle.setText("Drag any file or image here");
+            bg.setColor(Color.parseColor("#FCE8E6"));
+            statusBanner.setTextColor(Color.parseColor("#C5221F"));
+            statusBanner.setText("⚠ Accessibility Service is OFF — Follow the 3 steps below to turn TopBarDrop on in your Googlebook status bar.");
         }
+        statusBanner.setBackground(bg);
+        lastActionView.setText("Last status: " + TopBarDropService.lastActionMessage);
     }
 
-    private void handleIncomingShareIntent(Intent intent) {
-        if (intent == null) return;
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            Uri sharedUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (sharedUri != null) {
-                saveDroppedFileWithDlSuffix(sharedUri);
-            }
-        }
-    }
-
-    private void saveDroppedFileWithDlSuffix(Uri sourceUri) {
-        try {
-            ContentResolver resolver = getContentResolver();
-            String mimeType = resolver.getType(sourceUri);
-            String originalName = queryDisplayName(resolver, sourceUri);
-            if (originalName == null || originalName.isEmpty()) {
-                originalName = "file";
-            }
-
-            if (mimeType == null || mimeType.isEmpty()) {
-                int dot = originalName.lastIndexOf('.');
-                if (dot > 0 && dot < originalName.length() - 1) {
-                    String ext = originalName.substring(dot + 1).toLowerCase();
-                    mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
-                }
-                if (mimeType == null || mimeType.isEmpty()) {
-                    mimeType = "application/octet-stream";
+    private boolean isAccessibilityServiceEnabled() {
+        if (TopBarDropService.instance != null) return true;
+        AccessibilityManager am = getSystemService(AccessibilityManager.class);
+        if (am == null) return false;
+        ComponentName me = new ComponentName(this, TopBarDropService.class);
+        List<AccessibilityServiceInfo> list = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
+        for (AccessibilityServiceInfo info : list) {
+            if (info.getResolveInfo() != null && info.getResolveInfo().serviceInfo != null) {
+                String pkg = info.getResolveInfo().serviceInfo.packageName;
+                String cls = info.getResolveInfo().serviceInfo.name;
+                if (me.getPackageName().equals(pkg) && me.getClassName().equals(cls)) {
+                    return true;
                 }
             }
-
-            String newFileName = buildDlFileName(originalName, mimeType);
-            writeStreamToDownloads(resolver.openInputStream(sourceUri), newFileName, mimeType);
-
-            String summary = "Saved to Downloads: " + newFileName + " (" + mimeType + ")";
-            lastSavedLog.setText("✓ " + summary);
-            Toast.makeText(this, summary, Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            String err = "Drop failed: " + e.getMessage();
-            lastSavedLog.setText("⚠ " + err);
-            Toast.makeText(this, err, Toast.LENGTH_LONG).show();
         }
+        return false;
     }
 
-    private void saveDroppedTextWithDlSuffix(String content) {
-        try {
-            String newFileName = "dropped_text_dl.txt";
-            byte[] bytes = content.getBytes("UTF-8");
-            writeStreamToDownloads(new ByteArrayInputStream(bytes), newFileName, "text/plain");
-            String summary = "Saved to Downloads: " + newFileName + " (text/plain)";
-            lastSavedLog.setText("✓ " + summary);
-            Toast.makeText(this, summary, Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Error saving text: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
+    private void openAccessibilitySettings() {
+        String cn = new ComponentName(this, TopBarDropService.class).flattenToString();
+        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        intent.putExtra(":settings:fragment_args_key", cn);
+        Bundle bundle = new Bundle();
+        bundle.putString(":settings:fragment_args_key", cn);
+        intent.putExtra(":settings:show_fragment_args", bundle);
+        startActivity(intent);
     }
 
-    private void writeStreamToDownloads(InputStream input, String fileName, String mimeType) throws Exception {
-        if (input == null) {
-            throw new IllegalArgumentException("Cannot open dropped file stream");
-        }
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
-                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-
-                Uri destUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (destUri == null) {
-                    throw new IllegalStateException("Could not create file in Downloads");
-                }
-                try (OutputStream output = getContentResolver().openOutputStream(destUri)) {
-                    copyStream(input, output);
-                }
-            } else {
-                File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!downloadsDir.exists()) {
-                    downloadsDir.mkdirs();
-                }
-                File outFile = new File(downloadsDir, fileName);
-                try (OutputStream output = new FileOutputStream(outFile)) {
-                    copyStream(input, output);
-                }
-            }
-        } finally {
-            input.close();
-        }
-    }
-
-    private static void copyStream(InputStream in, OutputStream out) throws Exception {
-        byte[] buffer = new byte[8192];
-        int read;
-        while ((read = in.read(buffer)) != -1) {
-            out.write(buffer, 0, read);
-        }
-        out.flush();
-    }
-
-    private static String buildDlFileName(String originalName, String mimeType) {
-        int dotIndex = originalName.lastIndexOf('.');
-        if (dotIndex > 0) {
-            String base = originalName.substring(0, dotIndex);
-            String ext = originalName.substring(dotIndex);
-            return base + "_dl" + ext;
-        }
-        String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType);
-        if (ext != null && !ext.isEmpty()) {
-            return originalName + "_dl." + ext;
-        }
-        return originalName + "_dl";
-    }
-
-    private static String queryDisplayName(ContentResolver resolver, Uri uri) {
-        try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (idx >= 0) {
-                    return cursor.getString(idx);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return uri.getLastPathSegment();
-    }
-
-    private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
-            }
-        }
-    }
-
-    private void startTopBarStatusService() {
-        try {
-            Intent serviceIntent = new Intent(this, TopBarDropService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
-            } else {
-                startService(serviceIntent);
-            }
-        } catch (Exception ignored) {
-        }
+    private void openAppInfo() {
+        Intent intent = new Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null)
+        );
+        startActivity(intent);
     }
 
     private Uri createSampleImageUri() {
