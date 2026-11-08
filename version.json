@@ -1,6 +1,6 @@
 {
-  "version": "1.003",
-  "versionCode": 1003,
+  "version": "1.004",
+  "versionCode": 1004,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "v1.003: Configure 3:2 horizontal desktop window size (960dp x 640dp) and 2-column horizontal layout for the main menu window"
+  "notes": "v1.004: Remove REQUEST_INSTALL_PACKAGES and WRITE_EXTERNAL_STORAGE permissions and sign with a non-debug release certificate to minimize Google Play Protect warnings"
 }

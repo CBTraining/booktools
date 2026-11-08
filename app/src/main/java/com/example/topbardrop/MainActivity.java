@@ -156,8 +156,8 @@ public class MainActivity extends Activity {
         checkUpdateBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
-                    AutoUpdater.installDownloadedApkIfPermitted(MainActivity.this, createUpdateCallback());
+                if (AutoUpdater.updateAvailable) {
+                    AutoUpdater.downloadUpdateViaSystemManager(MainActivity.this, createUpdateCallback());
                 } else {
                     triggerAutoUpdateCheck(true);
                 }
@@ -397,10 +397,8 @@ public class MainActivity extends Activity {
                             : (dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368")));
                 }
                 if (checkUpdateBtn != null) {
-                    if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
-                        checkUpdateBtn.setText("Install Update");
-                    } else if (hasUpdate && AutoUpdater.latestRemoteVersion != null) {
-                        checkUpdateBtn.setText("Update v" + AutoUpdater.latestRemoteVersion);
+                    if (hasUpdate && AutoUpdater.latestRemoteVersion != null) {
+                        checkUpdateBtn.setText("Download v" + AutoUpdater.latestRemoteVersion);
                     } else {
                         checkUpdateBtn.setText("Check Update");
                     }
@@ -584,13 +582,6 @@ public class MainActivity extends Activity {
         super.onResume();
         current = this;
         refreshUiState();
-        // If user just granted 'Install unknown apps' and returned, finish installing the pending APK
-        if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
-                AutoUpdater.installDownloadedApkIfPermitted(this, createUpdateCallback());
-                return;
-            }
-        }
         triggerAutoUpdateCheck(false);
     }
 

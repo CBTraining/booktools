@@ -1,42 +1,36 @@
 package com.example.topbardrop;
 
-import android.app.PendingIntent;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
-import android.content.pm.PackageInstaller;
-import android.content.pm.PackageManager;
-import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
 import android.util.Base64;
 import android.widget.Toast;
 
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Arrays;
 
 import javax.net.ssl.HttpsURLConnection;
 
 /**
- * Hardened, leak-free GitHub auto-updater for BookTools:
- *  - Uses ApplicationContext and WeakReference<StatusCallback> so Activity instances never leak.
- *  - Enforces HTTPS-only connections and strict GitHub domain pinning on all redirects.
- *  - Verifies the downloaded APK's package name and signing certificate match the installed app
- *    before committing to PackageInstaller, and cleans up temporary APK files afterward.
+ * Play-Protect-friendly GitHub update detector & downloader for BookTools:
+ *  - Does NOT require REQUEST_INSTALL_PACKAGES (which triggers Play Protect's "harmful dropper"
+ *    heuristic when combined with an AccessibilityService).
+ *  - Instead, uses Android's built-in system DownloadManager to download BookTools.apk into
+ *    Downloads and opens the system package installer once complete.
  */
 public class AutoUpdater {
 
@@ -53,10 +47,11 @@ public class AutoUpdater {
     public static volatile boolean updateAvailable = false;
     public static volatile String latestRemoteVersion = null;
     public static volatile int latestRemoteVersionCode = -1;
-    public static volatile File pendingInstallApkFile = null;
+    public static volatile String latestApkDownloadUrl = RAW_APK_DEFAULT_URL;
 
     private static volatile boolean checkInProgress = false;
     private static volatile long lastCheckTimeMs = 0L;
+    private static volatile long activeDownloadId = -1L;
 
     public interface StatusCallback {
         void onStatusChanged(String status, boolean hasUpdate);
@@ -65,9 +60,9 @@ public class AutoUpdater {
     public static String getInstalledVersionName(Context context) {
         try {
             PackageInfo pi = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return pi.versionName != null ? pi.versionName : "1.002";
+            return pi.versionName != null ? pi.versionName : "1.004";
         } catch (Exception e) {
-            return "1.002";
+            return "1.004";
         }
     }
 
@@ -79,14 +74,14 @@ public class AutoUpdater {
             }
             return pi.versionCode;
         } catch (Exception e) {
-            return 1002;
+            return 1004;
         }
     }
 
     public static void checkForUpdates(
             Context context,
             final boolean manualTrigger,
-            final boolean autoInstallIfFound,
+            final boolean autoDownloadIfFound,
             StatusCallback callback
     ) {
         final Context appContext = context.getApplicationContext();
@@ -128,35 +123,37 @@ public class AutoUpdater {
 
                     final String remoteVer = versionJson.optString("version", localName);
                     final int remoteCode = versionJson.optInt("versionCode", localCode);
-                    String rawApkUrl = versionJson.optString("apkUrl", RAW_APK_DEFAULT_URL);
-
+                    String rawApkUrl;
                     if (commitSha != null && commitSha.matches("^[0-9a-fA-F]{7,40}$")) {
                         rawApkUrl = "https://raw.githubusercontent.com/CBTraining/booktools/"
                                 + commitSha + "/BookTools.apk";
                     } else {
                         rawApkUrl = RAW_APK_DEFAULT_URL + "?t=" + System.currentTimeMillis();
                     }
-                    final String finalApkUrl = rawApkUrl;
 
                     latestRemoteVersion = remoteVer;
                     latestRemoteVersionCode = remoteCode;
+                    latestApkDownloadUrl = rawApkUrl;
+                    checkInProgress = false;
 
                     if (remoteCode > localCode) {
                         updateAvailable = true;
                         updateStatus(
                                 mainHandler,
                                 callbackRef,
-                                "Update found: v" + remoteVer + " — Downloading...",
+                                "Update available: v" + remoteVer,
                                 true
                         );
-                        if (autoInstallIfFound) {
-                            downloadAndInstallApk(appContext, finalApkUrl, remoteVer, mainHandler, callbackRef);
-                        } else {
-                            checkInProgress = false;
+                        if (autoDownloadIfFound && manualTrigger) {
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    downloadUpdateViaSystemManager(appContext, callbackRef.get());
+                                }
+                            });
                         }
                     } else {
                         updateAvailable = false;
-                        checkInProgress = false;
                         updateStatus(
                                 mainHandler,
                                 callbackRef,
@@ -177,186 +174,77 @@ public class AutoUpdater {
         }).start();
     }
 
-    private static void downloadAndInstallApk(
-            final Context appContext,
-            final String apkUrl,
-            final String remoteVer,
-            final Handler mainHandler,
-            final WeakReference<StatusCallback> callbackRef
-    ) {
-        File outFile = new File(appContext.getCacheDir(), "BookTools_update.apk");
-        try {
-            if (outFile.exists()) {
-                outFile.delete();
-            }
-
-            HttpsURLConnection conn = openSecureGitHubConnection(apkUrl, "application/octet-stream");
-            int totalBytes = conn.getContentLength();
-
-            try (InputStream in = conn.getInputStream();
-                 FileOutputStream out = new FileOutputStream(outFile)) {
-                byte[] buf = new byte[8192];
-                int read;
-                int downloaded = 0;
-                while ((read = in.read(buf)) != -1) {
-                    out.write(buf, 0, read);
-                    downloaded += read;
-                    if (totalBytes > 0) {
-                        int pct = Math.min(100, (int) ((downloaded * 100L) / totalBytes));
-                        updateStatus(
-                                mainHandler,
-                                callbackRef,
-                                "Downloading v" + remoteVer + "... " + pct + "%",
-                                true
-                        );
-                    }
-                }
-                out.flush();
-            } finally {
-                conn.disconnect();
-            }
-
-            // Security Verification: Ensure downloaded APK matches our package name and signing key
-            if (!verifyDownloadedApkSignature(appContext, outFile)) {
-                outFile.delete();
-                checkInProgress = false;
-                updateStatus(
-                        mainHandler,
-                        callbackRef,
-                        "Security check failed: APK signature mismatch",
-                        false
-                );
-                return;
-            }
-
-            pendingInstallApkFile = outFile;
-            checkInProgress = false;
-
-            mainHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    installDownloadedApkIfPermitted(appContext, callbackRef.get());
-                }
-            });
-        } catch (Exception e) {
-            if (outFile.exists()) {
-                outFile.delete();
-            }
-            checkInProgress = false;
-            updateStatus(
-                    mainHandler,
-                    callbackRef,
-                    "Download failed: " + e.getMessage(),
-                    true
-            );
-        }
-    }
-
     /**
-     * Verifies that the downloaded APK archive has the exact same packageName and signing
-     * certificate as the currently installed app.
+     * Uses Android's trusted system DownloadManager to download BookTools.apk into Downloads
+     * and launches the system installer notification without needing REQUEST_INSTALL_PACKAGES.
      */
-    @SuppressWarnings("deprecation")
-    private static boolean verifyDownloadedApkSignature(Context context, File apkFile) {
+    public static void downloadUpdateViaSystemManager(Context context, final StatusCallback callback) {
+        final Context appContext = context.getApplicationContext();
+        String ver = latestRemoteVersion != null ? latestRemoteVersion : "latest";
+        String url = latestApkDownloadUrl != null ? latestApkDownloadUrl : RAW_APK_DEFAULT_URL;
+
         try {
-            PackageManager pm = context.getPackageManager();
-            int flags = PackageManager.GET_SIGNATURES;
-            PackageInfo archiveInfo = pm.getPackageArchiveInfo(apkFile.getAbsolutePath(), flags);
-            if (archiveInfo == null || !context.getPackageName().equals(archiveInfo.packageName)) {
-                return false;
-            }
-            PackageInfo installedInfo = pm.getPackageInfo(context.getPackageName(), flags);
-            if (archiveInfo.signatures == null || archiveInfo.signatures.length == 0
-                    || installedInfo.signatures == null || installedInfo.signatures.length == 0) {
-                return false;
-            }
-            Signature archiveSig = archiveInfo.signatures[0];
-            Signature installedSig = installedInfo.signatures[0];
-            return Arrays.equals(archiveSig.toByteArray(), installedSig.toByteArray());
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public static void installDownloadedApkIfPermitted(Context context, StatusCallback callback) {
-        File apkFile = pendingInstallApkFile;
-        if (apkFile == null || !apkFile.exists()) {
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!context.getPackageManager().canRequestPackageInstalls()) {
-                String msg = "Allow 'Install unknown apps' once to finish updating to v"
-                        + (latestRemoteVersion != null ? latestRemoteVersion : "");
-                updateStatusText = msg;
-                if (callback != null) {
-                    callback.onStatusChanged(msg, true);
-                }
-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show();
-                try {
-                    Intent intent = new Intent(
-                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                            Uri.parse("package:" + context.getPackageName())
-                    );
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    context.startActivity(intent);
-                } catch (Exception ignored) {
-                }
+            final DownloadManager dm = (DownloadManager) appContext.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) {
+                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                appContext.startActivity(browserIntent);
                 return;
             }
-        }
 
-        try {
-            PackageInstaller packageInstaller = context.getPackageManager().getPackageInstaller();
-            PackageInstaller.SessionParams params =
-                    new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-            params.setAppPackageName(context.getPackageName());
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
-            }
+            String fileName = "BookTools_v" + ver + ".apk";
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            req.setTitle("BookTools v" + ver + " Update");
+            req.setDescription("Downloading update from GitHub...");
+            req.setMimeType("application/vnd.android.package-archive");
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
 
-            int sessionId = packageInstaller.createSession(params);
-            PackageInstaller.Session session = packageInstaller.openSession(sessionId);
-
-            try (InputStream in = new FileInputStream(apkFile);
-                 OutputStream out = session.openWrite("BookTools.apk", 0, apkFile.length())) {
-                byte[] buffer = new byte[8192];
-                int c;
-                while ((c = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, c);
-                }
-                session.fsync(out);
-            }
-
-            // Clean up temporary APK from cache once streamed into PackageInstaller session
-            apkFile.delete();
-            pendingInstallApkFile = null;
-
-            Intent callbackIntent = new Intent(context, UpdateInstallReceiver.class);
-            callbackIntent.setPackage(context.getPackageName());
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                flags |= PendingIntent.FLAG_MUTABLE;
-            }
-            PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    sessionId,
-                    callbackIntent,
-                    flags
-            );
-
-            String msg = "Installing v" + (latestRemoteVersion != null ? latestRemoteVersion : "") + "...";
+            activeDownloadId = dm.enqueue(req);
+            String msg = "Downloading BookTools v" + ver + " to Downloads...";
             updateStatusText = msg;
             if (callback != null) {
                 callback.onStatusChanged(msg, true);
             }
-            session.commit(pendingIntent.getIntentSender());
-            session.close();
+            Toast.makeText(appContext, msg + " Tap the download notification when ready.", Toast.LENGTH_LONG).show();
+
+            BroadcastReceiver onComplete = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, Intent intent) {
+                    long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+                    if (id == activeDownloadId) {
+                        try {
+                            appContext.unregisterReceiver(this);
+                        } catch (Exception ignored) {
+                        }
+                        String doneMsg = "Downloaded v" + ver + " to Downloads (tap notification or Files to install)";
+                        updateStatusText = doneMsg;
+                        if (callback != null) {
+                            callback.onStatusChanged(doneMsg, true);
+                        }
+                        Toast.makeText(appContext, doneMsg, Toast.LENGTH_LONG).show();
+                    }
+                }
+            };
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appContext.registerReceiver(
+                        onComplete,
+                        new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+                        Context.RECEIVER_EXPORTED
+                );
+            } else {
+                appContext.registerReceiver(
+                        onComplete,
+                        new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+                );
+            }
         } catch (Exception e) {
-            String err = "Install error: " + e.getMessage();
-            updateStatusText = err;
-            if (callback != null) {
-                callback.onStatusChanged(err, true);
+            try {
+                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                appContext.startActivity(browserIntent);
+            } catch (Exception ignored) {
             }
         }
     }
@@ -435,7 +323,7 @@ public class AutoUpdater {
                 throw new SecurityException("Blocked non-GitHub or non-HTTPS URL: " + currentUrl);
             }
             HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
-            conn.setInstanceFollowRedirects(false); // Manually validate every redirect target
+            conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(12000);
             conn.setUseCaches(false);
