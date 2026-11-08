@@ -1,6 +1,6 @@
 {
-  "version": "1.001",
-  "versionCode": 1001,
+  "version": "1.002",
+  "versionCode": 1002,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "v1.001: Frosted glass blur strictly inside popup cards without blurring the rest of the screen"
+  "notes": "v1.002: Memory leak prevention (bitmap recycling, thumbnail downscaling, WeakReference callbacks) and security hardening (HTTPS & GitHub host pinning, APK signature verification, cleartext traffic disabled)"
 }

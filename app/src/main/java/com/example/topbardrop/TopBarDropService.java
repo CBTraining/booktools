@@ -100,6 +100,7 @@ public class TopBarDropService extends AccessibilityService {
 
     private Uri currentPngUri;
     private String currentPngFileName;
+    private Bitmap currentPreviewBitmap;
     private boolean clipboardProcessedForCurrentPopup = false;
     private long lastShortcutTriggerMs = 0L;
 
@@ -683,6 +684,13 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void removePopupViewImmediate() {
+        if (previewImageView != null) {
+            previewImageView.setImageDrawable(null);
+        }
+        if (currentPreviewBitmap != null && !currentPreviewBitmap.isRecycled()) {
+            currentPreviewBitmap.recycle();
+            currentPreviewBitmap = null;
+        }
         if (popupRoot != null && windowManager != null) {
             try {
                 windowManager.removeViewImmediate(popupRoot);
@@ -697,6 +705,20 @@ public class TopBarDropService extends AccessibilityService {
         popupCard = null;
         popupShown = false;
         popupDismissing = false;
+        releaseScreenBitmapsIfIdle();
+    }
+
+    private void releaseScreenBitmapsIfIdle() {
+        if (!popupShown && !colorPickerShown && !colorPickerCaptureInFlight) {
+            if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
+                lastCapturedScreenBitmap.recycle();
+            }
+            lastCapturedScreenBitmap = null;
+            if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
+                lastBlurredScreenBitmap.recycle();
+            }
+            lastBlurredScreenBitmap = null;
+        }
     }
 
     private void tryProcessClipboardImage(boolean isFinalAttempt) {
@@ -780,7 +802,7 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private Bitmap decodeBitmapFromDataUriText(String text) {
-        if (text == null) return null;
+        if (text == null || text.length() > 16 * 1024 * 1024) return null;
         int idx = text.indexOf("data:image/");
         if (idx < 0) return null;
         int base64Marker = text.indexOf(";base64,", idx);
@@ -803,6 +825,8 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void saveBitmapAsPngAndPopulatePopup(Bitmap bitmap, String baseName) {
+        int fullWidth = bitmap.getWidth();
+        int fullHeight = bitmap.getHeight();
         try {
             String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
             String cleanBase = (baseName != null && !baseName.isEmpty())
@@ -837,9 +861,27 @@ public class TopBarDropService extends AccessibilityService {
             currentPngUri = savedUri;
             currentPngFileName = pngFileName;
 
+            // Create a lightweight downscaled thumbnail for the popup preview and immediately
+            // recycle the full-resolution bitmap so large 4K clipboard images never sit in RAM.
+            int maxPreviewDim = dpToPx(280f);
+            Bitmap previewBmp = bitmap;
+            if (fullWidth > maxPreviewDim || fullHeight > maxPreviewDim) {
+                float ratio = Math.min((float) maxPreviewDim / fullWidth, (float) maxPreviewDim / fullHeight);
+                int pw = Math.max(1, Math.round(fullWidth * ratio));
+                int ph = Math.max(1, Math.round(fullHeight * ratio));
+                previewBmp = Bitmap.createScaledBitmap(bitmap, pw, ph, true);
+                if (previewBmp != bitmap) {
+                    bitmap.recycle();
+                }
+            }
+            if (currentPreviewBitmap != null && currentPreviewBitmap != previewBmp && !currentPreviewBitmap.isRecycled()) {
+                currentPreviewBitmap.recycle();
+            }
+            currentPreviewBitmap = previewBmp;
+
             headerTitleView.setText("Saved PNG: " + pngFileName);
-            subtitleView.setText(bitmap.getWidth() + " × " + bitmap.getHeight() + " px · Downloaded to Downloads");
-            previewImageView.setImageBitmap(bitmap);
+            subtitleView.setText(fullWidth + " × " + fullHeight + " px · Downloaded to Downloads");
+            previewImageView.setImageBitmap(previewBmp);
             dragHintView.setText("⬇ Click & Drag this PNG into any app");
 
             dragBox.setScaleX(0.95f);
@@ -851,9 +893,12 @@ public class TopBarDropService extends AccessibilityService {
                     .setInterpolator(new OvershootInterpolator(1.2f))
                     .start();
 
-            lastActionMessage = "Saved " + pngFileName + " (" + bitmap.getWidth() + "×" + bitmap.getHeight() + ") to Downloads";
+            lastActionMessage = "Saved " + pngFileName + " (" + fullWidth + "×" + fullHeight + ") to Downloads";
             notifyActivityStatus();
         } catch (Exception e) {
+            if (!bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
             showPopupError("Failed to save PNG", e.getMessage());
         }
     }
@@ -1333,6 +1378,9 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void removeColorPickerImmediate() {
+        if (colorPickerCanvas != null) {
+            colorPickerCanvas.cancelRunningAnimator();
+        }
         if (colorPickerRoot != null && windowManager != null) {
             try {
                 windowManager.removeViewImmediate(colorPickerRoot);
@@ -1347,6 +1395,7 @@ public class TopBarDropService extends AccessibilityService {
         colorPickerCanvas = null;
         colorPickerShown = false;
         colorPickerDismissing = false;
+        releaseScreenBitmapsIfIdle();
     }
 
     private class ColorPickerRootView extends FrameLayout {
@@ -1484,6 +1533,21 @@ public class TopBarDropService extends AccessibilityService {
             centerInnerPaint.setStyle(Paint.Style.STROKE);
             centerInnerPaint.setStrokeWidth(dpToPx(1f));
             centerInnerPaint.setColor(Color.BLACK);
+        }
+
+        public void cancelRunningAnimator() {
+            if (currentAnimator != null) {
+                currentAnimator.removeAllUpdateListeners();
+                currentAnimator.removeAllListeners();
+                currentAnimator.cancel();
+                currentAnimator = null;
+            }
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            cancelRunningAnimator();
+            super.onDetachedFromWindow();
         }
 
         public void startAppearAnimation() {

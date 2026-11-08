@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -22,13 +24,19 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
+
+import javax.net.ssl.HttpsURLConnection;
 
 /**
- * Checks https://github.com/CBTraining/booktools for a newer version.json,
- * downloads the updated BookTools.apk automatically, and triggers Android's
- * PackageInstaller session to self-update in place.
+ * Hardened, leak-free GitHub auto-updater for BookTools:
+ *  - Uses ApplicationContext and WeakReference<StatusCallback> so Activity instances never leak.
+ *  - Enforces HTTPS-only connections and strict GitHub domain pinning on all redirects.
+ *  - Verifies the downloaded APK's package name and signing certificate match the installed app
+ *    before committing to PackageInstaller, and cleans up temporary APK files afterward.
  */
 public class AutoUpdater {
 
@@ -57,9 +65,9 @@ public class AutoUpdater {
     public static String getInstalledVersionName(Context context) {
         try {
             PackageInfo pi = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return pi.versionName != null ? pi.versionName : "1.000";
+            return pi.versionName != null ? pi.versionName : "1.002";
         } catch (Exception e) {
-            return "1.000";
+            return "1.002";
         }
     }
 
@@ -71,16 +79,19 @@ public class AutoUpdater {
             }
             return pi.versionCode;
         } catch (Exception e) {
-            return 1000;
+            return 1002;
         }
     }
 
     public static void checkForUpdates(
-            final Context context,
+            Context context,
             final boolean manualTrigger,
             final boolean autoInstallIfFound,
-            final StatusCallback callback
+            StatusCallback callback
     ) {
+        final Context appContext = context.getApplicationContext();
+        final WeakReference<StatusCallback> callbackRef = new WeakReference<>(callback);
+
         long now = System.currentTimeMillis();
         if (checkInProgress) {
             return;
@@ -97,24 +108,21 @@ public class AutoUpdater {
         final Handler mainHandler = new Handler(Looper.getMainLooper());
 
         if (manualTrigger) {
-            updateStatus(mainHandler, callback, "Checking GitHub for updates...", updateAvailable);
+            updateStatus(mainHandler, callbackRef, "Checking GitHub for updates...", updateAvailable);
         }
 
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    int localCode = getInstalledVersionCode(context);
-                    String localName = getInstalledVersionName(context);
+                    int localCode = getInstalledVersionCode(appContext);
+                    String localName = getInstalledVersionName(appContext);
 
-                    // 1. Fetch latest commit SHA so raw.githubusercontent URLs bypass CDN cache
                     String commitSha = fetchLatestCommitSha();
-
-                    // 2. Fetch version.json (via GitHub Contents API first, then raw URL with SHA)
                     JSONObject versionJson = fetchVersionJson(commitSha);
                     if (versionJson == null) {
                         checkInProgress = false;
-                        updateStatus(mainHandler, callback, "v" + localName + " (Up to date)", false);
+                        updateStatus(mainHandler, callbackRef, "v" + localName + " (Up to date)", false);
                         return;
                     }
 
@@ -122,13 +130,11 @@ public class AutoUpdater {
                     final int remoteCode = versionJson.optInt("versionCode", localCode);
                     String rawApkUrl = versionJson.optString("apkUrl", RAW_APK_DEFAULT_URL);
 
-                    // If we have the exact commit SHA, rewrite the raw URL to use the immutable commit SHA
-                    // so Fastly CDN never serves a stale cached APK!
-                    if (commitSha != null && !commitSha.isEmpty()) {
+                    if (commitSha != null && commitSha.matches("^[0-9a-fA-F]{7,40}$")) {
                         rawApkUrl = "https://raw.githubusercontent.com/CBTraining/booktools/"
                                 + commitSha + "/BookTools.apk";
                     } else {
-                        rawApkUrl = rawApkUrl + "?t=" + System.currentTimeMillis();
+                        rawApkUrl = RAW_APK_DEFAULT_URL + "?t=" + System.currentTimeMillis();
                     }
                     final String finalApkUrl = rawApkUrl;
 
@@ -139,12 +145,12 @@ public class AutoUpdater {
                         updateAvailable = true;
                         updateStatus(
                                 mainHandler,
-                                callback,
+                                callbackRef,
                                 "Update found: v" + remoteVer + " — Downloading...",
                                 true
                         );
                         if (autoInstallIfFound) {
-                            downloadAndInstallApk(context, finalApkUrl, remoteVer, mainHandler, callback);
+                            downloadAndInstallApk(appContext, finalApkUrl, remoteVer, mainHandler, callbackRef);
                         } else {
                             checkInProgress = false;
                         }
@@ -153,7 +159,7 @@ public class AutoUpdater {
                         checkInProgress = false;
                         updateStatus(
                                 mainHandler,
-                                callback,
+                                callbackRef,
                                 "v" + localName + " is up to date",
                                 false
                         );
@@ -162,8 +168,8 @@ public class AutoUpdater {
                     checkInProgress = false;
                     updateStatus(
                             mainHandler,
-                            callback,
-                            "Update check offline (" + getInstalledVersionName(context) + ")",
+                            callbackRef,
+                            "Update check offline (" + getInstalledVersionName(appContext) + ")",
                             updateAvailable
                     );
                 }
@@ -172,19 +178,19 @@ public class AutoUpdater {
     }
 
     private static void downloadAndInstallApk(
-            final Context context,
+            final Context appContext,
             final String apkUrl,
             final String remoteVer,
             final Handler mainHandler,
-            final StatusCallback callback
+            final WeakReference<StatusCallback> callbackRef
     ) {
+        File outFile = new File(appContext.getCacheDir(), "BookTools_update.apk");
         try {
-            File outFile = new File(context.getCacheDir(), "BookTools_update.apk");
             if (outFile.exists()) {
                 outFile.delete();
             }
 
-            HttpURLConnection conn = openConnectionWithRedirects(apkUrl, "application/octet-stream");
+            HttpsURLConnection conn = openSecureGitHubConnection(apkUrl, "application/octet-stream");
             int totalBytes = conn.getContentLength();
 
             try (InputStream in = conn.getInputStream();
@@ -199,13 +205,28 @@ public class AutoUpdater {
                         int pct = Math.min(100, (int) ((downloaded * 100L) / totalBytes));
                         updateStatus(
                                 mainHandler,
-                                callback,
+                                callbackRef,
                                 "Downloading v" + remoteVer + "... " + pct + "%",
                                 true
                         );
                     }
                 }
                 out.flush();
+            } finally {
+                conn.disconnect();
+            }
+
+            // Security Verification: Ensure downloaded APK matches our package name and signing key
+            if (!verifyDownloadedApkSignature(appContext, outFile)) {
+                outFile.delete();
+                checkInProgress = false;
+                updateStatus(
+                        mainHandler,
+                        callbackRef,
+                        "Security check failed: APK signature mismatch",
+                        false
+                );
+                return;
             }
 
             pendingInstallApkFile = outFile;
@@ -214,17 +235,46 @@ public class AutoUpdater {
             mainHandler.post(new Runnable() {
                 @Override
                 public void run() {
-                    installDownloadedApkIfPermitted(context, callback);
+                    installDownloadedApkIfPermitted(appContext, callbackRef.get());
                 }
             });
         } catch (Exception e) {
+            if (outFile.exists()) {
+                outFile.delete();
+            }
             checkInProgress = false;
             updateStatus(
                     mainHandler,
-                    callback,
+                    callbackRef,
                     "Download failed: " + e.getMessage(),
                     true
             );
+        }
+    }
+
+    /**
+     * Verifies that the downloaded APK archive has the exact same packageName and signing
+     * certificate as the currently installed app.
+     */
+    @SuppressWarnings("deprecation")
+    private static boolean verifyDownloadedApkSignature(Context context, File apkFile) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            int flags = PackageManager.GET_SIGNATURES;
+            PackageInfo archiveInfo = pm.getPackageArchiveInfo(apkFile.getAbsolutePath(), flags);
+            if (archiveInfo == null || !context.getPackageName().equals(archiveInfo.packageName)) {
+                return false;
+            }
+            PackageInfo installedInfo = pm.getPackageInfo(context.getPackageName(), flags);
+            if (archiveInfo.signatures == null || archiveInfo.signatures.length == 0
+                    || installedInfo.signatures == null || installedInfo.signatures.length == 0) {
+                return false;
+            }
+            Signature archiveSig = archiveInfo.signatures[0];
+            Signature installedSig = installedInfo.signatures[0];
+            return Arrays.equals(archiveSig.toByteArray(), installedSig.toByteArray());
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -278,7 +328,12 @@ public class AutoUpdater {
                 session.fsync(out);
             }
 
+            // Clean up temporary APK from cache once streamed into PackageInstaller session
+            apkFile.delete();
+            pendingInstallApkFile = null;
+
             Intent callbackIntent = new Intent(context, UpdateInstallReceiver.class);
+            callbackIntent.setPackage(context.getPackageName());
             int flags = PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 flags |= PendingIntent.FLAG_MUTABLE;
@@ -290,7 +345,6 @@ public class AutoUpdater {
                     flags
             );
 
-            pendingInstallApkFile = null;
             String msg = "Installing v" + (latestRemoteVersion != null ? latestRemoteVersion : "") + "...";
             updateStatusText = msg;
             if (callback != null) {
@@ -308,8 +362,9 @@ public class AutoUpdater {
     }
 
     private static String fetchLatestCommitSha() {
+        HttpsURLConnection conn = null;
         try {
-            HttpURLConnection conn = openConnectionWithRedirects(
+            conn = openSecureGitHubConnection(
                     GITHUB_API_COMMIT_URL + "?t=" + System.currentTimeMillis(),
                     "application/vnd.github.v3+json"
             );
@@ -319,14 +374,16 @@ public class AutoUpdater {
                 return obj.optString("sha", null);
             }
         } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
         }
         return null;
     }
 
     private static JSONObject fetchVersionJson(String commitSha) {
-        // Try GitHub Contents API first (instant update, 0 CDN delay)
+        HttpsURLConnection conn = null;
         try {
-            HttpURLConnection conn = openConnectionWithRedirects(
+            conn = openSecureGitHubConnection(
                     GITHUB_API_VERSION_URL + "&t=" + System.currentTimeMillis(),
                     "application/vnd.github.v3+json"
             );
@@ -340,28 +397,45 @@ public class AutoUpdater {
                 }
             }
         } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
         }
 
-        // Fallback to raw.githubusercontent.com (using commitSha if available)
+        HttpsURLConnection rawConn = null;
         try {
-            String url = (commitSha != null && !commitSha.isEmpty())
+            String url = (commitSha != null && commitSha.matches("^[0-9a-fA-F]{7,40}$"))
                     ? "https://raw.githubusercontent.com/CBTraining/booktools/" + commitSha + "/version.json"
                     : RAW_VERSION_URL + "?t=" + System.currentTimeMillis();
-            HttpURLConnection conn = openConnectionWithRedirects(url, "application/json");
-            if (conn.getResponseCode() == 200) {
-                String body = readStreamToString(conn.getInputStream());
+            rawConn = openSecureGitHubConnection(url, "application/json");
+            if (rawConn.getResponseCode() == 200) {
+                String body = readStreamToString(rawConn.getInputStream());
                 return new JSONObject(body);
             }
         } catch (Exception ignored) {
+        } finally {
+            if (rawConn != null) rawConn.disconnect();
         }
         return null;
     }
 
-    private static HttpURLConnection openConnectionWithRedirects(String urlStr, String accept) throws Exception {
+    private static boolean isAllowedGitHubHost(String host) {
+        if (host == null) return false;
+        String h = host.toLowerCase();
+        return h.equals("api.github.com")
+                || h.equals("raw.githubusercontent.com")
+                || h.equals("github.com")
+                || h.endsWith(".githubusercontent.com");
+    }
+
+    private static HttpsURLConnection openSecureGitHubConnection(String urlStr, String accept) throws Exception {
         String currentUrl = urlStr;
         for (int redirects = 0; redirects < 5; redirects++) {
-            HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
-            conn.setInstanceFollowRedirects(true);
+            URL url = new URL(currentUrl);
+            if (!"https".equalsIgnoreCase(url.getProtocol()) || !isAllowedGitHubHost(url.getHost())) {
+                throw new SecurityException("Blocked non-GitHub or non-HTTPS URL: " + currentUrl);
+            }
+            HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false); // Manually validate every redirect target
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(12000);
             conn.setUseCaches(false);
@@ -402,19 +476,20 @@ public class AutoUpdater {
 
     private static void updateStatus(
             Handler mainHandler,
-            final StatusCallback callback,
+            final WeakReference<StatusCallback> callbackRef,
             final String text,
             final boolean hasUpdate
     ) {
         updateStatusText = text;
         updateAvailable = hasUpdate;
-        if (callback != null) {
-            mainHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    callback.onStatusChanged(text, hasUpdate);
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                StatusCallback cb = callbackRef.get();
+                if (cb != null) {
+                    cb.onStatusChanged(text, hasUpdate);
                 }
-            });
-        }
+            }
+        });
     }
 }
