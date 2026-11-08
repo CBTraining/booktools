@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.topbardrop"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="2"
+    android:versionName="2.0">
 
     <uses-sdk
         android:minSdkVersion="26"
         android:targetSdkVersion="34" />
 
-    <!-- Required to draw the floating icon/drop-zone at the top of the screen -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <!-- Required to keep the top-bar overlay running in the background -->
+    <!-- Standard, non-restricted permissions only (NO SYSTEM_ALERT_WINDOW) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -27,20 +25,52 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout">
+
+            <!-- Launch as a compact top-right window on Android Desktop / Freeform -->
+            <layout
+                android:defaultWidth="320dp"
+                android:defaultHeight="180dp"
+                android:gravity="top|end"
+                android:minWidth="180dp"
+                android:minHeight="72dp" />
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Also support Share -> TopBarDrop for any file/image -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
+        <!-- Ongoing top status bar icon service -->
         <service
             android:name=".TopBarDropService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="top_bar_drag_and_drop_overlay" />
+                android:value="top_bar_status_icon_for_file_drop" />
+        </service>
+
+        <!-- Native Top Bar Quick Settings Tile -->
+        <service
+            android:name=".TopBarTileService"
+            android:exported="true"
+            android:icon="@android:drawable/stat_sys_download_done"
+            android:label="TopBarDrop (*_dl)"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
     </application>
 </manifest>
