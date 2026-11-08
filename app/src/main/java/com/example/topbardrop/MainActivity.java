@@ -42,6 +42,8 @@ public class MainActivity extends Activity {
     public static volatile MainActivity current;
 
     private TextView statusBanner;
+    private TextView updateStatusView;
+    private Button checkUpdateBtn;
     private View setupCard;
     private TextView lastActionView;
 
@@ -50,6 +52,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         current = this;
         buildThemedContentView();
+        triggerAutoUpdateCheck(false);
     }
 
     @Override
@@ -65,6 +68,7 @@ public class MainActivity extends Activity {
 
     private void buildThemedContentView() {
         boolean dark = isDarkMode();
+        String verName = AutoUpdater.getInstalledVersionName(this);
 
         int bgWindow = dark ? Color.parseColor("#121316") : Color.parseColor("#F1F3F4");
         int textPrimary = dark ? Color.parseColor("#F1F3F4") : Color.parseColor("#202124");
@@ -82,33 +86,57 @@ public class MainActivity extends Activity {
         root.setPadding(pad, dpToPx(18f), pad, pad);
         scrollView.addView(root);
 
-        // --- Header Row with 45-Degree Lime-to-Teal Open Book + Wrench Icon ---
+        // --- Header Row with Icon, Title, Version Badge, Author Credit, and Update Controls ---
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView appIcon = new ImageView(this);
         appIcon.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(42f), dpToPx(42f));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(44f), dpToPx(44f));
         iconLp.rightMargin = dpToPx(14f);
         titleRow.addView(appIcon, iconLp);
 
         LinearLayout titleTextCol = new LinearLayout(this);
         titleTextCol.setOrientation(LinearLayout.VERTICAL);
 
+        LinearLayout nameAndVerRow = new LinearLayout(this);
+        nameAndVerRow.setOrientation(LinearLayout.HORIZONTAL);
+        nameAndVerRow.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView title = new TextView(this);
         title.setText("BookTools");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(textPrimary);
-        titleTextCol.addView(title);
+        nameAndVerRow.addView(title);
+
+        TextView verBadge = new TextView(this);
+        verBadge.setText("v" + verName);
+        verBadge.setTextColor(accentTeal);
+        verBadge.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        verBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        verBadge.setPadding(dpToPx(8f), dpToPx(2f), dpToPx(8f), dpToPx(2f));
+        GradientDrawable verBg = new GradientDrawable();
+        verBg.setCornerRadius(dpToPx(10f));
+        verBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#F0FDFA"));
+        verBg.setStroke(dpToPx(1f), dark ? Color.parseColor("#0D9488") : Color.parseColor("#99F6E4"));
+        verBadge.setBackground(verBg);
+        LinearLayout.LayoutParams verLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        verLp.leftMargin = dpToPx(10f);
+        nameAndVerRow.addView(verBadge, verLp);
+
+        titleTextCol.addView(nameAndVerRow);
 
         TextView authorLine = new TextView(this);
         authorLine.setText("Made by Christopher Gammello");
         authorLine.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         authorLine.setTypeface(Typeface.DEFAULT_BOLD);
         authorLine.setTextColor(accentTeal);
-        authorLine.setPadding(0, dpToPx(1f), 0, dpToPx(2f));
+        authorLine.setPadding(0, dpToPx(2f), 0, dpToPx(2f));
         titleTextCol.addView(authorLine);
 
         TextView subtitle = new TextView(this);
@@ -117,7 +145,40 @@ public class MainActivity extends Activity {
         subtitle.setTextColor(textSecondary);
         titleTextCol.addView(subtitle);
 
-        titleRow.addView(titleTextCol);
+        titleRow.addView(titleTextCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // Update status & Check / Self-Update button on the right of the header
+        LinearLayout updateCol = new LinearLayout(this);
+        updateCol.setOrientation(LinearLayout.VERTICAL);
+        updateCol.setGravity(Gravity.END);
+
+        checkUpdateBtn = createActionButton(dark, "Check Update", false);
+        checkUpdateBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
+                    AutoUpdater.installDownloadedApkIfPermitted(MainActivity.this, createUpdateCallback());
+                } else {
+                    triggerAutoUpdateCheck(true);
+                }
+            }
+        });
+        updateCol.addView(checkUpdateBtn, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        updateStatusView = new TextView(this);
+        updateStatusView.setText(AutoUpdater.updateStatusText);
+        updateStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        updateStatusView.setTextColor(textSecondary);
+        updateStatusView.setPadding(0, dpToPx(4f), 0, 0);
+        updateCol.addView(updateStatusView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        titleRow.addView(updateCol);
         root.addView(titleRow);
 
         // --- Status Banner ---
@@ -293,6 +354,34 @@ public class MainActivity extends Activity {
         refreshUiState();
     }
 
+    private AutoUpdater.StatusCallback createUpdateCallback() {
+        return new AutoUpdater.StatusCallback() {
+            @Override
+            public void onStatusChanged(String status, boolean hasUpdate) {
+                if (updateStatusView != null) {
+                    updateStatusView.setText(status);
+                    boolean dark = isDarkMode();
+                    updateStatusView.setTextColor(hasUpdate
+                            ? (dark ? Color.parseColor("#A3E635") : Color.parseColor("#0D9488"))
+                            : (dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368")));
+                }
+                if (checkUpdateBtn != null) {
+                    if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
+                        checkUpdateBtn.setText("Install Update");
+                    } else if (hasUpdate && AutoUpdater.latestRemoteVersion != null) {
+                        checkUpdateBtn.setText("Update v" + AutoUpdater.latestRemoteVersion);
+                    } else {
+                        checkUpdateBtn.setText("Check Update");
+                    }
+                }
+            }
+        };
+    }
+
+    private void triggerAutoUpdateCheck(boolean manual) {
+        AutoUpdater.checkForUpdates(this, manual, true, createUpdateCallback());
+    }
+
     public Bitmap captureActivityWindowBitmap() {
         try {
             View root = getWindow().getDecorView().getRootView();
@@ -464,6 +553,14 @@ public class MainActivity extends Activity {
         super.onResume();
         current = this;
         refreshUiState();
+        // If user just granted 'Install unknown apps' and returned, finish installing the pending APK
+        if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
+                AutoUpdater.installDownloadedApkIfPermitted(this, createUpdateCallback());
+                return;
+            }
+        }
+        triggerAutoUpdateCheck(false);
     }
 
     @Override

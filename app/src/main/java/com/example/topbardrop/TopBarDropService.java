@@ -128,6 +128,7 @@ public class TopBarDropService extends AccessibilityService {
         instance = this;
         lastActionMessage = "Active — Ctrl+Shift+D (Clipboard PNG) · Ctrl+Shift+C (Color Picker)";
         notifyActivityStatus();
+        AutoUpdater.checkForUpdates(this, false, true, null);
     }
 
     @Override
