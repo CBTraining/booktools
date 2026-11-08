@@ -264,6 +264,13 @@ public class MainActivity extends Activity {
                 "Opens a precision crosshair with a frosted glass magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
         ));
 
+        shortcutsCard.addView(buildShortcutItem(
+                dark,
+                "Ctrl + Shift + G",
+                "Local Clipboard History (Up to 30 Items · 100% On-Device)",
+                "Opens a frosted glass history popup of your last 30 copied text snippets, #HEX colors, and PNG images stored 100% locally on your device. Click any item to re-copy it or click-and-drag it straight into any app."
+        ));
+
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 
@@ -365,6 +372,21 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams btnLp3 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         btnLp3.leftMargin = dpToPx(8f);
         testRow.addView(triggerColorBtn, btnLp3);
+
+        Button triggerHistoryBtn = createActionButton(dark, "History (Ctrl+Shift+G)", true);
+        triggerHistoryBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (TopBarDropService.instance != null) {
+                    TopBarDropService.instance.triggerClipboardHistoryPopup();
+                } else {
+                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on the service first!", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+        LinearLayout.LayoutParams btnLp4 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btnLp4.leftMargin = dpToPx(8f);
+        testRow.addView(triggerHistoryBtn, btnLp4);
 
         testCard.addView(testRow, testLp);
 
@@ -573,6 +595,10 @@ public class MainActivity extends Activity {
                 TopBarDropService.instance.triggerColorPickerOverlay();
                 return true;
             }
+            if (event.getKeyCode() == KeyEvent.KEYCODE_G && TopBarDropService.instance != null) {
+                TopBarDropService.instance.triggerClipboardHistoryPopup();
+                return true;
+            }
         }
         return super.dispatchKeyEvent(event);
     }
@@ -611,7 +637,7 @@ public class MainActivity extends Activity {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
-            statusBanner.setText("✓ SERVICE ACTIVE — Press Ctrl + Shift + D (Clipboard PNG) or Ctrl + Shift + C (Color Picker) anytime.");
+            statusBanner.setText("✓ SERVICE ACTIVE — Ctrl+Shift+D (PNG) · Ctrl+Shift+C (Color) · Ctrl+Shift+G (Local History)");
         } else {
             bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));
@@ -619,7 +645,9 @@ public class MainActivity extends Activity {
             statusBanner.setText("⚠ SERVICE INACTIVE — Follow Steps 1 & 2 below to enable global shortcuts.");
         }
         statusBanner.setBackground(bg);
-        lastActionView.setText("Status: " + TopBarDropService.lastActionMessage);
+        int localCount = ClipboardHistoryManager.getItemCount(this);
+        lastActionView.setText("Status: " + TopBarDropService.lastActionMessage
+                + " · Local History: " + localCount + "/" + ClipboardHistoryManager.MAX_HISTORY_ITEMS + " items");
     }
 
     private void copySampleWebpToClipboard() {
