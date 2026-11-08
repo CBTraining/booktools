@@ -1,6 +1,9 @@
 package com.example.topbardrop;
 
 import android.accessibilityservice.AccessibilityService;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
@@ -13,10 +16,12 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.HardwareBuffer;
@@ -28,6 +33,7 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.DragEvent;
@@ -59,8 +65,7 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Global keyboard shortcut service for Googlebook OS (Android 17 desktop):
- *  - NO top status bar icon (zero conflict with BentoBar).
+ * Global keyboard shortcut service for ClipDrop:
  *  - Ctrl + Shift + D: Reads clipboard image (WebP, JPEG, PNG, GIF, BMP, data URI),
  *    saves it as a lossless .png in Downloads, and opens an animated popup card where
  *    you can click-and-drag the PNG into any app, or dismiss by swiping or right-clicking.
@@ -96,10 +101,12 @@ public class TopBarDropService extends AccessibilityService {
     private long lastShortcutTriggerMs = 0L;
 
     // --- Ctrl + Shift + C (Screen Color Picker) state ---
-    private ColorPickerOverlayView colorPickerView;
+    private ColorPickerRootView colorPickerRoot;
+    private ColorPickerCanvasView colorPickerCanvas;
     private WindowManager.LayoutParams colorPickerParams;
     private boolean colorPickerShown = false;
     private boolean colorPickerDismissing = false;
+    private boolean colorPickerCaptureInFlight = false;
     private Bitmap lastCapturedScreenBitmap;
     private long lastColorPickerTriggerMs = 0L;
 
@@ -121,7 +128,6 @@ public class TopBarDropService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // No persistent overlay needed; we react strictly to keyboard shortcuts.
     }
 
     @Override
@@ -193,7 +199,7 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     @Override
-    public boolean onUnbind( android.content.Intent intent) {
+    public boolean onUnbind(android.content.Intent intent) {
         dismissPopup(false);
         dismissColorPicker(false);
         instance = null;
@@ -229,12 +235,10 @@ public class TopBarDropService extends AccessibilityService {
             return;
         }
 
-        // Close color picker if open
         if (colorPickerShown) {
             dismissColorPicker(false);
         }
 
-        // Remove any previous popup before animating the new one in
         dismissPopup(false);
         clipboardProcessedForCurrentPopup = false;
         currentPngUri = null;
@@ -242,7 +246,6 @@ public class TopBarDropService extends AccessibilityService {
 
         buildAndShowPopupWindow();
 
-        // Try immediately and retry at 60ms / 150ms / 300ms once WindowManager grants focus
         int[] delays = new int[]{0, 60, 150, 300};
         for (int delay : delays) {
             handler.postDelayed(new Runnable() {
@@ -286,14 +289,13 @@ public class TopBarDropService extends AccessibilityService {
             popupCard.setElevation(dpToPx(8f));
         }
 
-        // Header bar (supports horizontal swipe-to-dismiss)
         LinearLayout headerRow = new LinearLayout(this);
         headerRow.setOrientation(LinearLayout.HORIZONTAL);
         headerRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView headerIcon = new ImageView(this);
         headerIcon.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(20f), dpToPx(20f));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(22f), dpToPx(22f));
         iconLp.rightMargin = dpToPx(8f);
         headerRow.addView(headerIcon, iconLp);
 
@@ -325,7 +327,6 @@ public class TopBarDropService extends AccessibilityService {
         subtitleView.setPadding(0, dpToPx(4f), 0, dpToPx(10f));
         popupCard.addView(subtitleView);
 
-        // Draggable PNG Preview Box
         dragBox = new LinearLayout(this);
         dragBox.setOrientation(LinearLayout.VERTICAL);
         dragBox.setGravity(Gravity.CENTER);
@@ -335,7 +336,7 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable boxBg = new GradientDrawable();
         boxBg.setCornerRadius(dpToPx(14f));
         boxBg.setColor(Color.parseColor("#303134"));
-        boxBg.setStroke(dpToPx(1.5f), Color.parseColor("#8AB4F8"));
+        boxBg.setStroke(dpToPx(1.5f), Color.parseColor("#2DD4BF"));
         dragBox.setBackground(boxBg);
 
         previewImageView = new ImageView(this);
@@ -350,7 +351,7 @@ public class TopBarDropService extends AccessibilityService {
 
         dragHintView = new TextView(this);
         dragHintView.setText("⬇ Click & Drag this PNG into any app");
-        dragHintView.setTextColor(Color.parseColor("#8AB4F8"));
+        dragHintView.setTextColor(Color.parseColor("#2DD4BF"));
         dragHintView.setTypeface(Typeface.DEFAULT_BOLD);
         dragHintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         dragHintView.setGravity(Gravity.CENTER);
@@ -371,7 +372,6 @@ public class TopBarDropService extends AccessibilityService {
         footerHint.setPadding(0, dpToPx(10f), 0, 0);
         popupCard.addView(footerHint);
 
-        // Attach swipe-to-dismiss on the header, subtitle, and footer
         SwipeDismissTouchListener swipeListener = new SwipeDismissTouchListener();
         headerRow.setOnTouchListener(swipeListener);
         subtitleView.setOnTouchListener(swipeListener);
@@ -382,7 +382,6 @@ public class TopBarDropService extends AccessibilityService {
                 FrameLayout.LayoutParams.WRAP_CONTENT
         ));
 
-        // Listen for drag completion so the popup restores opacity or closes after drop
         popupRoot.setOnDragListener(new View.OnDragListener() {
             @Override
             public boolean onDrag(View v, DragEvent event) {
@@ -419,9 +418,8 @@ public class TopBarDropService extends AccessibilityService {
         popupParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        popupParams.setTitle("TopBarDrop PNG Popup");
+        popupParams.setTitle("ClipDrop PNG Popup");
 
-        // Prepare initial state for Grow + Fade-In animation
         popupCard.setPivotX(dpToPx(260f));
         popupCard.setPivotY(dpToPx(20f));
         popupCard.setScaleX(0.78f);
@@ -636,7 +634,6 @@ public class TopBarDropService extends AccessibilityService {
             previewImageView.setImageBitmap(bitmap);
             dragHintView.setText("⬇ Click & Drag this PNG into any app");
 
-            // Subtle pulse on the preview box when the image finishes converting
             dragBox.setScaleX(0.95f);
             dragBox.setScaleY(0.95f);
             dragBox.animate()
@@ -884,24 +881,54 @@ public class TopBarDropService extends AccessibilityService {
             dismissColorPicker(false);
         }
 
+        lastActionMessage = "Opening Color Picker (Ctrl+Shift+C)...";
+        notifyActivityStatus();
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            captureScreenAndOpenColorPicker(0);
+            captureScreenAndOpenColorPicker();
         } else {
-            Toast.makeText(this, "Color picker requires Android 11+", Toast.LENGTH_SHORT).show();
+            openColorPickerWithFallback("Android 11+ required for full-screen pixel capture");
         }
     }
 
-    private void captureScreenAndOpenColorPicker(final int attempt) {
+    private void captureScreenAndOpenColorPicker() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            openColorPickerWithFallback(null);
             return;
         }
+
+        colorPickerCaptureInFlight = true;
+
+        // Safety watchdog: if the OS screenshot callback doesn't return within 220ms for any reason,
+        // still open the Color Picker overlay so Ctrl+Shift+C never fails silently!
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (colorPickerCaptureInFlight && !colorPickerShown) {
+                    colorPickerCaptureInFlight = false;
+                    openColorPickerWithFallback("Toggle ClipDrop OFF & ON once in Accessibility Settings to refresh screen capture");
+                }
+            }
+        }, 220);
+
+        int displayId = Display.DEFAULT_DISPLAY;
+        try {
+            if (windowManager != null && windowManager.getDefaultDisplay() != null) {
+                displayId = windowManager.getDefaultDisplay().getDisplayId();
+            }
+        } catch (Exception ignored) {
+        }
+
         try {
             takeScreenshot(
-                    Display.DEFAULT_DISPLAY,
+                    displayId,
                     getMainExecutor(),
                     new TakeScreenshotCallback() {
                         @Override
                         public void onSuccess(ScreenshotResult screenshot) {
+                            if (!colorPickerCaptureInFlight) return;
+                            colorPickerCaptureInFlight = false;
+
                             Bitmap swBitmap = null;
                             try {
                                 HardwareBuffer hb = screenshot.getHardwareBuffer();
@@ -922,43 +949,77 @@ public class TopBarDropService extends AccessibilityService {
                                     lastCapturedScreenBitmap.recycle();
                                 }
                                 lastCapturedScreenBitmap = swBitmap;
-                                showColorPickerWithBitmap(swBitmap);
-                            } else if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-                                showColorPickerWithBitmap(lastCapturedScreenBitmap);
+                                showColorPickerOverlay(swBitmap, null);
                             } else {
-                                Toast.makeText(TopBarDropService.this, "Could not read screen pixels", Toast.LENGTH_SHORT).show();
+                                openColorPickerWithFallback(null);
                             }
                         }
 
                         @Override
                         public void onFailure(int errorCode) {
-                            // If triggered rapidly within Android's screenshot interval window, retry or use cached screenshot
-                            if (attempt == 0) {
-                                handler.postDelayed(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        captureScreenAndOpenColorPicker(1);
-                                    }
-                                }, 320);
-                            } else if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-                                showColorPickerWithBitmap(lastCapturedScreenBitmap);
-                            } else {
-                                Toast.makeText(TopBarDropService.this,
-                                        "Screenshot busy (code " + errorCode + "). Try Ctrl+Shift+C again.",
-                                        Toast.LENGTH_SHORT).show();
-                            }
+                            if (!colorPickerCaptureInFlight) return;
+                            colorPickerCaptureInFlight = false;
+                            String hint = (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS
+                                    || errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
+                                    ? "Tip: Toggle ClipDrop OFF & ON once in Accessibility Settings to enable full-screen pixel capture"
+                                    : null;
+                            openColorPickerWithFallback(hint);
                         }
                     }
             );
-        } catch (Exception e) {
-            Toast.makeText(this, "Color picker error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            colorPickerCaptureInFlight = false;
+            openColorPickerWithFallback("Tip: Toggle ClipDrop OFF & ON once in Accessibility Settings to enable full-screen pixel capture");
         }
     }
 
-    private void showColorPickerWithBitmap(Bitmap bitmap) {
+    private void openColorPickerWithFallback(String bannerHint) {
+        if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
+            showColorPickerOverlay(lastCapturedScreenBitmap, bannerHint);
+            return;
+        }
+        if (MainActivity.current != null) {
+            Bitmap actBmp = MainActivity.current.captureActivityWindowBitmap();
+            if (actBmp != null) {
+                showColorPickerOverlay(actBmp, bannerHint);
+                return;
+            }
+        }
+        Bitmap fallbackBmp = createFallbackSpectrumBitmap();
+        showColorPickerOverlay(fallbackBmp, bannerHint);
+    }
+
+    private Bitmap createFallbackSpectrumBitmap() {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int w = Math.max(800, dm.widthPixels);
+        int h = Math.max(600, dm.heightPixels);
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        Paint p = new Paint();
+        p.setShader(new LinearGradient(0, 0, w, h,
+                new int[]{
+                        Color.parseColor("#A3E635"),
+                        Color.parseColor("#2DD4BF"),
+                        Color.parseColor("#0D9488"),
+                        Color.parseColor("#3B82F6"),
+                        Color.parseColor("#8B5CF6"),
+                        Color.parseColor("#EC4899")
+                },
+                null,
+                Shader.TileMode.CLAMP));
+        c.drawRect(0, 0, w, h, p);
+        return bmp;
+    }
+
+    private void showColorPickerOverlay(Bitmap bitmap, String bannerHint) {
         dismissColorPicker(false);
 
-        colorPickerView = new ColorPickerOverlayView(this, bitmap);
+        colorPickerRoot = new ColorPickerRootView(this);
+        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, bannerHint);
+        colorPickerRoot.addView(colorPickerCanvas, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
 
         colorPickerParams = new WindowManager.LayoutParams();
         colorPickerParams.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
@@ -969,25 +1030,29 @@ public class TopBarDropService extends AccessibilityService {
         colorPickerParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        colorPickerParams.setTitle("TopBarDrop Color Picker");
+        colorPickerParams.setTitle("ClipDrop Color Picker");
 
         try {
-            windowManager.addView(colorPickerView, colorPickerParams);
+            windowManager.addView(colorPickerRoot, colorPickerParams);
             colorPickerShown = true;
             colorPickerDismissing = false;
-            colorPickerView.requestFocus();
-            colorPickerView.animateIn();
+            colorPickerRoot.requestFocus();
+            colorPickerCanvas.startAppearAnimation();
+            lastActionMessage = "Color Picker active — Click any pixel to copy #HEX (Right-click or Esc to cancel)";
+            notifyActivityStatus();
         } catch (Exception e) {
             colorPickerShown = false;
             colorPickerDismissing = false;
+            lastActionMessage = "Color Picker error: " + e.getMessage();
+            notifyActivityStatus();
         }
     }
 
     public void dismissColorPicker(boolean animate) {
-        if (!colorPickerShown || colorPickerView == null) {
+        if (!colorPickerShown || colorPickerRoot == null) {
             return;
         }
-        if (!animate) {
+        if (!animate || colorPickerCanvas == null) {
             removeColorPickerImmediate();
             return;
         }
@@ -995,11 +1060,11 @@ public class TopBarDropService extends AccessibilityService {
             return;
         }
         colorPickerDismissing = true;
-        final ColorPickerOverlayView viewToRemove = colorPickerView;
-        colorPickerView.animateOut(new Runnable() {
+        final View rootToRemove = colorPickerRoot;
+        colorPickerCanvas.startDisappearAnimation(new Runnable() {
             @Override
             public void run() {
-                if (colorPickerView == viewToRemove) {
+                if (colorPickerRoot == rootToRemove) {
                     removeColorPickerImmediate();
                 }
             }
@@ -1007,34 +1072,85 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void removeColorPickerImmediate() {
-        if (colorPickerView != null && windowManager != null) {
+        if (colorPickerRoot != null && windowManager != null) {
             try {
-                windowManager.removeViewImmediate(colorPickerView);
+                windowManager.removeViewImmediate(colorPickerRoot);
             } catch (Exception ignored) {
                 try {
-                    windowManager.removeView(colorPickerView);
+                    windowManager.removeView(colorPickerRoot);
                 } catch (Exception ignored2) {
                 }
             }
         }
-        colorPickerView = null;
+        colorPickerRoot = null;
+        colorPickerCanvas = null;
         colorPickerShown = false;
         colorPickerDismissing = false;
     }
 
+    private class ColorPickerRootView extends FrameLayout {
+        public ColorPickerRootView(android.content.Context context) {
+            super(context);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+        }
+
+        @Override
+        public boolean dispatchGenericMotionEvent(MotionEvent event) {
+            if (event != null) {
+                if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
+                    dismissColorPicker(true);
+                    return true;
+                }
+                if (colorPickerCanvas != null) {
+                    colorPickerCanvas.updatePointerFromMotionEvent(event);
+                }
+            }
+            return super.dispatchGenericMotionEvent(event);
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent event) {
+            if (event != null && (event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
+                dismissColorPicker(true);
+                return true;
+            }
+            return super.dispatchTouchEvent(event);
+        }
+
+        @Override
+        public boolean dispatchKeyEvent(KeyEvent event) {
+            if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                    dismissColorPicker(true);
+                    return true;
+                }
+                if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER || event.getKeyCode() == KeyEvent.KEYCODE_SPACE) {
+                    if (colorPickerCanvas != null) {
+                        colorPickerCanvas.pickCurrentColorAndClose();
+                        return true;
+                    }
+                }
+            }
+            return super.dispatchKeyEvent(event);
+        }
+    }
+
     /**
      * Full-screen interactive Crosshair + Magnifier Loupe view.
-     * - Displays the frozen screen snapshot so nothing moves while picking a pixel.
+     * - Displays the captured screen snapshot so pixels stay still while inspecting.
      * - Tracks mouse hover (ACTION_HOVER_MOVE) and touch/drag (ACTION_MOVE).
-     * - Renders a magnified 11x11 pixel grid + #RRGGBB HEX pill above the crosshair,
+     * - Renders a magnified 11x11 pixel grid + #RRGGBB HEX pill ON TOP OF the crosshair,
      *   and automatically flips it BELOW the crosshair if the top zoom preview would go out of view!
      * - Clicking copies the pointed #RRGGBB HEX code to the clipboard and shows a sleek confirmation badge.
      */
-    private class ColorPickerOverlayView extends View {
+    private class ColorPickerCanvasView extends View {
         private final Bitmap screenBmp;
+        private final String bannerHint;
         private float pointerX = -1f;
         private float pointerY = -1f;
-        private float loupeScale = 0f;
+        private float animProgress = 1f;
+        private ValueAnimator currentAnimator;
 
         private final int gridRadius = 5; // 11 x 11 pixel grid
         private final int gridCount = gridRadius * 2 + 1;
@@ -1046,20 +1162,18 @@ public class TopBarDropService extends AccessibilityService {
         private final Paint cardStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint subTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint bannerTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint crosshairDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint crosshairLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint centerOuterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint centerInnerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF tempRect = new RectF();
         private final Path clipPath = new Path();
 
-        private float touchDownX;
-        private float touchDownY;
-        private boolean touchDragged;
-
-        public ColorPickerOverlayView(android.content.Context context, Bitmap bitmap) {
+        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, String hint) {
             super(context);
             this.screenBmp = bitmap;
-            setFocusable(true);
-            setFocusableInTouchMode(true);
+            this.bannerHint = hint;
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 setPointerIcon(PointerIcon.getSystemIcon(context, PointerIcon.TYPE_CROSSHAIR));
@@ -1071,11 +1185,10 @@ public class TopBarDropService extends AccessibilityService {
 
             cardPaint.setStyle(Paint.Style.FILL);
             cardPaint.setColor(Color.parseColor("#202124"));
-            cardPaint.setShadowLayer(dpToPx(8f), 0f, dpToPx(3f), 0x88000000);
 
             cardStrokePaint.setStyle(Paint.Style.STROKE);
-            cardStrokePaint.setStrokeWidth(dpToPx(1.5f));
-            cardStrokePaint.setColor(Color.parseColor("#8AB4F8"));
+            cardStrokePaint.setStrokeWidth(dpToPx(1.8f));
+            cardStrokePaint.setColor(Color.parseColor("#2DD4BF"));
 
             textPaint.setColor(Color.WHITE);
             textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
@@ -1087,50 +1200,78 @@ public class TopBarDropService extends AccessibilityService {
             subTextPaint.setTextSize(TypedValue.applyDimension(
                     TypedValue.COMPLEX_UNIT_SP, 11f, getResources().getDisplayMetrics()));
 
+            bannerTextPaint.setColor(Color.WHITE);
+            bannerTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
+            bannerTextPaint.setTextAlign(Paint.Align.CENTER);
+            bannerTextPaint.setTextSize(TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_SP, 12.5f, getResources().getDisplayMetrics()));
+
             crosshairDarkPaint.setStyle(Paint.Style.STROKE);
-            crosshairDarkPaint.setStrokeWidth(dpToPx(2.5f));
-            crosshairDarkPaint.setColor(0xCC000000);
+            crosshairDarkPaint.setStrokeWidth(dpToPx(3f));
+            crosshairDarkPaint.setColor(0xDD000000);
             crosshairDarkPaint.setStrokeCap(Paint.Cap.ROUND);
 
             crosshairLightPaint.setStyle(Paint.Style.STROKE);
-            crosshairLightPaint.setStrokeWidth(dpToPx(1.5f));
+            crosshairLightPaint.setStrokeWidth(dpToPx(1.6f));
             crosshairLightPaint.setColor(0xFFFFFFFF);
             crosshairLightPaint.setStrokeCap(Paint.Cap.ROUND);
+
+            centerOuterPaint.setStyle(Paint.Style.STROKE);
+            centerOuterPaint.setStrokeWidth(dpToPx(2f));
+            centerOuterPaint.setColor(Color.WHITE);
+
+            centerInnerPaint.setStyle(Paint.Style.STROKE);
+            centerInnerPaint.setStrokeWidth(dpToPx(1f));
+            centerInnerPaint.setColor(Color.BLACK);
         }
 
-        public void animateIn() {
-            setAlpha(0f);
-            loupeScale = 0.72f;
-            animate()
-                    .alpha(1f)
-                    .setDuration(160)
-                    .setInterpolator(new DecelerateInterpolator())
-                    .setUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
-                        @Override
-                        public void onAnimationUpdate(android.animation.ValueAnimator animation) {
-                            float f = animation.getAnimatedFraction();
-                            loupeScale = 0.72f + 0.28f * f;
-                            invalidate();
-                        }
-                    })
-                    .start();
+        public void startAppearAnimation() {
+            if (currentAnimator != null) {
+                currentAnimator.cancel();
+            }
+            animProgress = 0f;
+            currentAnimator = ValueAnimator.ofFloat(0f, 1f);
+            currentAnimator.setDuration(190);
+            currentAnimator.setInterpolator(new OvershootInterpolator(1.08f));
+            currentAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator animation) {
+                    animProgress = (Float) animation.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            currentAnimator.start();
         }
 
-        public void animateOut(final Runnable onEnd) {
-            animate()
-                    .alpha(0f)
-                    .setDuration(140)
-                    .setInterpolator(new AccelerateInterpolator())
-                    .setUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
-                        @Override
-                        public void onAnimationUpdate(android.animation.ValueAnimator animation) {
-                            float f = animation.getAnimatedFraction();
-                            loupeScale = 1.0f - 0.25f * f;
-                            invalidate();
-                        }
-                    })
-                    .withEndAction(onEnd)
-                    .start();
+        public void startDisappearAnimation(final Runnable onEnd) {
+            if (currentAnimator != null) {
+                currentAnimator.cancel();
+            }
+            currentAnimator = ValueAnimator.ofFloat(animProgress, 0f);
+            currentAnimator.setDuration(150);
+            currentAnimator.setInterpolator(new AccelerateInterpolator(1.2f));
+            currentAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator animation) {
+                    animProgress = (Float) animation.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            currentAnimator.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    if (onEnd != null) {
+                        onEnd.run();
+                    }
+                }
+            });
+            currentAnimator.start();
+        }
+
+        public void updatePointerFromMotionEvent(MotionEvent event) {
+            pointerX = event.getX();
+            pointerY = event.getY();
+            invalidate();
         }
 
         @Override
@@ -1151,7 +1292,8 @@ public class TopBarDropService extends AccessibilityService {
                 return;
             }
 
-            // Draw the frozen screenshot underneath so every pixel stays still while inspecting
+            int alphaInt = clamp(Math.round(Math.min(1f, Math.max(0f, animProgress)) * 255f), 0, 255);
+            bmpPaint.setAlpha(alphaInt);
             canvas.drawBitmap(screenBmp, 0f, 0f, bmpPaint);
 
             if (pointerX < 0f || pointerY < 0f) {
@@ -1167,33 +1309,49 @@ public class TopBarDropService extends AccessibilityService {
             int g = Color.green(centerColor);
             int b = Color.blue(centerColor);
 
-            // 1. Draw high-contrast precision Crosshair at (pointerX, pointerY)
-            float chGap = dpToPx(5f);
-            float chLen = dpToPx(16f);
+            float scale = 0.72f + 0.28f * animProgress;
 
-            // Outer dark strokes for contrast on white backgrounds
+            // 1. Draw top instruction pill so user immediately sees the Color Picker is active
+            String topMsg = (bannerHint != null && !bannerHint.isEmpty())
+                    ? bannerHint
+                    : "Color Picker — Move cursor & click to copy " + hex + " · Right-click or Esc to cancel";
+            float pillWidth = bannerTextPaint.measureText(topMsg) + dpToPx(32f);
+            float pillHeight = dpToPx(34f);
+            float pillLeft = (viewW - pillWidth) / 2f;
+            float pillTop = dpToPx(50f);
+            tempRect.set(pillLeft, pillTop, pillLeft + pillWidth, pillTop + pillHeight);
+            canvas.save();
+            canvas.scale(scale, scale, viewW / 2f, pillTop + pillHeight / 2f);
+            canvas.drawRoundRect(tempRect, dpToPx(17f), dpToPx(17f), cardPaint);
+            canvas.drawRoundRect(tempRect, dpToPx(17f), dpToPx(17f), cardStrokePaint);
+            canvas.drawText(topMsg, viewW / 2f, pillTop + dpToPx(22f), bannerTextPaint);
+            canvas.restore();
+
+            // 2. Draw high-contrast precision Crosshair at (pointerX, pointerY)
+            float chGap = dpToPx(5f);
+            float chLen = dpToPx(18f);
+
             canvas.drawLine(pointerX - chLen, pointerY, pointerX - chGap, pointerY, crosshairDarkPaint);
             canvas.drawLine(pointerX + chGap, pointerY, pointerX + chLen, pointerY, crosshairDarkPaint);
             canvas.drawLine(pointerX, pointerY - chLen, pointerX, pointerY - chGap, crosshairDarkPaint);
             canvas.drawLine(pointerX, pointerY + chGap, pointerX, pointerY + chLen, crosshairDarkPaint);
             canvas.drawCircle(pointerX, pointerY, chGap, crosshairDarkPaint);
 
-            // Inner white strokes for contrast on dark backgrounds
             canvas.drawLine(pointerX - chLen, pointerY, pointerX - chGap, pointerY, crosshairLightPaint);
             canvas.drawLine(pointerX + chGap, pointerY, pointerX + chLen, pointerY, crosshairLightPaint);
             canvas.drawLine(pointerX, pointerY - chLen, pointerX, pointerY - chGap, crosshairLightPaint);
             canvas.drawLine(pointerX, pointerY + chGap, pointerX, pointerY + chLen, crosshairLightPaint);
             canvas.drawCircle(pointerX, pointerY, chGap, crosshairLightPaint);
 
-            // 2. Compute Zoom Loupe Card bounds (auto-flips below crosshair if near top edge!)
+            // 3. Compute Zoom Loupe Card bounds (auto-flips below crosshair if near top edge!)
             float cellPx = dpToPx(11f);
-            float gridSize = cellPx * gridCount; // ~121dp
+            float gridSize = cellPx * gridCount;
             float pad = dpToPx(10f);
             float infoHeight = dpToPx(46f);
             float cardW = gridSize + pad * 2f;
             float cardH = gridSize + pad * 2f + infoHeight;
             float cursorOffset = dpToPx(26f);
-            float screenEdgeMargin = dpToPx(12f);
+            float screenEdgeMargin = dpToPx(14f);
 
             // Default: ON TOP OF the crosshair
             float cardLeft = pointerX - cardW / 2f;
@@ -1203,24 +1361,18 @@ public class TopBarDropService extends AccessibilityService {
             if (cardTop < screenEdgeMargin) {
                 cardTop = pointerY + cursorOffset;
             }
-            // Also clamp bottom if screen is very short
             if (cardTop + cardH > viewH - screenEdgeMargin) {
                 cardTop = viewH - screenEdgeMargin - cardH;
             }
-            // Clamp left/right so the zoom loupe never goes off-screen horizontally
             if (cardLeft < screenEdgeMargin) {
                 cardLeft = screenEdgeMargin;
             } else if (cardLeft + cardW > viewW - screenEdgeMargin) {
                 cardLeft = viewW - screenEdgeMargin - cardW;
             }
 
-            float cardCenterX = cardLeft + cardW / 2f;
-            float cardCenterY = cardTop + cardH / 2f;
-
             canvas.save();
-            canvas.scale(loupeScale, loupeScale, pointerX, pointerY);
+            canvas.scale(scale, scale, pointerX, pointerY);
 
-            // Draw Loupe Card background
             tempRect.set(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
             float cornerRadius = dpToPx(16f);
             canvas.drawRoundRect(tempRect, cornerRadius, cornerRadius, cardPaint);
@@ -1253,18 +1405,9 @@ public class TopBarDropService extends AccessibilityService {
             float centerPxLeft = gridLeft + gridRadius * cellPx;
             float centerPxTop = gridTop + gridRadius * cellPx;
             tempRect.set(centerPxLeft, centerPxTop, centerPxLeft + cellPx, centerPxTop + cellPx);
-            Paint centerOuter = new Paint(Paint.ANTI_ALIAS_FLAG);
-            centerOuter.setStyle(Paint.Style.STROKE);
-            centerOuter.setStrokeWidth(dpToPx(2f));
-            centerOuter.setColor(Color.WHITE);
-            canvas.drawRect(tempRect, centerOuter);
-
+            canvas.drawRect(tempRect, centerOuterPaint);
             tempRect.inset(dpToPx(1.5f), dpToPx(1.5f));
-            Paint centerInner = new Paint(Paint.ANTI_ALIAS_FLAG);
-            centerInner.setStyle(Paint.Style.STROKE);
-            centerInner.setStrokeWidth(dpToPx(1f));
-            centerInner.setColor(Color.BLACK);
-            canvas.drawRect(tempRect, centerInner);
+            canvas.drawRect(tempRect, centerInnerPaint);
 
             // Draw Color Swatch + #RRGGBB HEX + RGB(r,g,b) below the magnified grid
             float infoTop = gridTop + gridSize + dpToPx(8f);
@@ -1288,32 +1431,10 @@ public class TopBarDropService extends AccessibilityService {
         @Override
         public boolean onHoverEvent(MotionEvent event) {
             if (event != null) {
-                pointerX = event.getX();
-                pointerY = event.getY();
-                invalidate();
+                updatePointerFromMotionEvent(event);
                 return true;
             }
             return super.onHoverEvent(event);
-        }
-
-        @Override
-        public boolean dispatchGenericMotionEvent(MotionEvent event) {
-            if (event != null) {
-                if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                    dismissColorPicker(true);
-                    return true;
-                }
-                int action = event.getActionMasked();
-                if (action == MotionEvent.ACTION_HOVER_MOVE
-                        || action == MotionEvent.ACTION_HOVER_ENTER
-                        || action == MotionEvent.ACTION_SCROLL) {
-                    pointerX = event.getX();
-                    pointerY = event.getY();
-                    invalidate();
-                    return true;
-                }
-            }
-            return super.dispatchGenericMotionEvent(event);
         }
 
         @Override
@@ -1329,30 +1450,18 @@ public class TopBarDropService extends AccessibilityService {
 
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    pointerX = event.getX();
-                    pointerY = event.getY();
-                    touchDownX = pointerX;
-                    touchDownY = pointerY;
-                    touchDragged = false;
-                    invalidate();
+                    updatePointerFromMotionEvent(event);
                     if (isMouse) {
                         pickCurrentColorAndClose();
                     }
                     return true;
 
                 case MotionEvent.ACTION_MOVE:
-                    pointerX = event.getX();
-                    pointerY = event.getY();
-                    if (Math.hypot(pointerX - touchDownX, pointerY - touchDownY) > dpToPx(4f)) {
-                        touchDragged = true;
-                    }
-                    invalidate();
+                    updatePointerFromMotionEvent(event);
                     return true;
 
                 case MotionEvent.ACTION_UP:
-                    pointerX = event.getX();
-                    pointerY = event.getY();
-                    invalidate();
+                    updatePointerFromMotionEvent(event);
                     if (!isMouse) {
                         pickCurrentColorAndClose();
                     }
@@ -1361,22 +1470,7 @@ public class TopBarDropService extends AccessibilityService {
             return super.onTouchEvent(event);
         }
 
-        @Override
-        public boolean dispatchKeyEvent(KeyEvent event) {
-            if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
-                    dismissColorPicker(true);
-                    return true;
-                }
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER || event.getKeyCode() == KeyEvent.KEYCODE_SPACE) {
-                    pickCurrentColorAndClose();
-                    return true;
-                }
-            }
-            return super.dispatchKeyEvent(event);
-        }
-
-        private void pickCurrentColorAndClose() {
+        public void pickCurrentColorAndClose() {
             if (screenBmp == null || screenBmp.isRecycled()) {
                 dismissColorPicker(true);
                 return;
@@ -1401,9 +1495,6 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    /**
-     * Briefly displays a sleek animated pill in the top-right confirming the copied #RRGGBB HEX color.
-     */
     private void showCopiedColorBadge(int color, String hex) {
         final FrameLayout badgeRoot = new FrameLayout(this);
         int outerPad = dpToPx(8f);
@@ -1417,7 +1508,7 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable pillBg = new GradientDrawable();
         pillBg.setCornerRadius(dpToPx(24f));
         pillBg.setColor(Color.parseColor("#202124"));
-        pillBg.setStroke(dpToPx(1.5f), Color.parseColor("#5F6368"));
+        pillBg.setStroke(dpToPx(1.5f), Color.parseColor("#2DD4BF"));
         pill.setBackground(pillBg);
 
         View swatch = new View(this);

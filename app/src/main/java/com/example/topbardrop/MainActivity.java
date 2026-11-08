@@ -59,29 +59,29 @@ public class MainActivity extends Activity {
         root.setPadding(pad, dpToPx(18f), pad, pad);
         scrollView.addView(root);
 
-        // --- Header Row with Monochromatic Rounded Downward Arrow Icon ---
+        // --- Header Row with 45-Degree Lime-to-Teal Gradient Arrow Icon ---
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView appIcon = new ImageView(this);
         appIcon.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(34f), dpToPx(34f));
-        iconLp.rightMargin = dpToPx(10f);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(36f), dpToPx(36f));
+        iconLp.rightMargin = dpToPx(12f);
         titleRow.addView(appIcon, iconLp);
 
         LinearLayout titleTextCol = new LinearLayout(this);
         titleTextCol.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("TopBarDrop");
+        title.setText("ClipDrop");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.parseColor("#202124"));
         titleTextCol.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Clipboard PNG Downloader & Screen Color Picker · No Top-Bar Clutter");
+        subtitle.setText("Instant Clipboard Image-to-PNG Converter & Screen HEX Color Picker");
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         subtitle.setTextColor(Color.parseColor("#5F6368"));
         titleTextCol.addView(subtitle);
@@ -101,12 +101,12 @@ public class MainActivity extends Activity {
         bannerLp.topMargin = dpToPx(14f);
         root.addView(statusBanner, bannerLp);
 
-        // --- Card 1: Streamlined 2-Step First-Time Setup (including "Allow restricted settings") ---
+        // --- Card 1: Streamlined 2-Step Setup (including "Allow restricted settings") ---
         setupCard = buildCardContainer();
         LinearLayout setupLayout = (LinearLayout) setupCard;
 
         TextView setupHeader = new TextView(this);
-        setupHeader.setText("Quick 2-Step Setup (One-Time)");
+        setupHeader.setText("Quick 2-Step Setup");
         setupHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         setupHeader.setTypeface(Typeface.DEFAULT_BOLD);
         setupHeader.setTextColor(Color.parseColor("#202124"));
@@ -114,8 +114,8 @@ public class MainActivity extends Activity {
 
         setupLayout.addView(buildStepRow(
                 "1",
-                "Unlock Restricted Settings",
-                "First, tap 'Open Accessibility' and click TopBarDrop (if Android blocks it, that triggers the setting). Then tap 'Open App Info', click the ⋮ (three dots) in the top-right corner, and tap 'Allow restricted settings'.",
+                "Allow Restricted Settings",
+                "Tap 'Open App Info (⋮)', click the ⋮ (three dots) in the top-right corner of the system page, and choose 'Allow restricted settings'. (If ⋮ isn't shown yet, click ClipDrop once inside Accessibility Settings first.)",
                 "1. Open App Info (⋮)",
                 new View.OnClickListener() {
                     @Override
@@ -135,8 +135,8 @@ public class MainActivity extends Activity {
 
         setupLayout.addView(buildStepRow(
                 "2",
-                "Turn On TopBarDrop Shortcut Service",
-                "Once Restricted Settings are allowed, open Accessibility Settings, select 'TopBarDrop Shortcuts', and switch it ON.",
+                "Enable Shortcut Service",
+                "Tap 'Open Accessibility', select 'ClipDrop Shortcuts', and switch it ON. (If updating from an older version, toggle it OFF and back ON once to refresh permissions.)",
                 "2. Open Accessibility",
                 new View.OnClickListener() {
                     @Override
@@ -157,7 +157,7 @@ public class MainActivity extends Activity {
         LinearLayout shortcutsCard = buildCardContainer();
 
         TextView shortcutsHeader = new TextView(this);
-        shortcutsHeader.setText("Global Keyboard Shortcuts");
+        shortcutsHeader.setText("What You Can Do");
         shortcutsHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         shortcutsHeader.setTypeface(Typeface.DEFAULT_BOLD);
         shortcutsHeader.setTextColor(Color.parseColor("#202124"));
@@ -165,14 +165,14 @@ public class MainActivity extends Activity {
 
         shortcutsCard.addView(buildShortcutItem(
                 "Ctrl + Shift + D",
-                "Clipboard Image → PNG Popup",
-                "Converts any copied image (WebP, JPEG, PNG) into a lossless .png in Downloads and pops up an animated window. Click & drag the PNG into any app, or swipe / right-click to dismiss."
+                "Clipboard Image → PNG Download & Drag Popup",
+                "Converts any copied image (WebP, JPEG, PNG, etc.) into a lossless .png file in Downloads and opens an animated popup card. Click & drag the PNG directly into any app, or swipe / right-click to dismiss."
         ));
 
         shortcutsCard.addView(buildShortcutItem(
                 "Ctrl + Shift + C",
-                "Screen Color Picker (#HEX)",
-                "Opens a precision crosshair and magnified pixel loupe (auto-flips above/below cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to the clipboard."
+                "Screen Color Picker (#HEX to Clipboard)",
+                "Opens a precision crosshair with a live magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
         ));
 
         LinearLayout.LayoutParams cardLp2 = new LinearLayout.LayoutParams(
@@ -186,7 +186,7 @@ public class MainActivity extends Activity {
         LinearLayout testCard = buildCardContainer();
 
         TextView testHeader = new TextView(this);
-        testHeader.setText("Try It Now");
+        testHeader.setText("Test Tools");
         testHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         testHeader.setTypeface(Typeface.DEFAULT_BOLD);
         testHeader.setTextColor(Color.parseColor("#202124"));
@@ -216,7 +216,7 @@ public class MainActivity extends Activity {
                 if (TopBarDropService.instance != null) {
                     TopBarDropService.instance.triggerClipboardToPngPopup();
                 } else {
-                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on TopBarDrop first!", Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on the service first!", Toast.LENGTH_LONG).show();
                 }
             }
         });
@@ -231,7 +231,7 @@ public class MainActivity extends Activity {
                 if (TopBarDropService.instance != null) {
                     TopBarDropService.instance.triggerColorPickerOverlay();
                 } else {
-                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on TopBarDrop first!", Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on the service first!", Toast.LENGTH_LONG).show();
                 }
             }
         });
@@ -243,7 +243,7 @@ public class MainActivity extends Activity {
 
         lastActionView = new TextView(this);
         lastActionView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        lastActionView.setTextColor(Color.parseColor("#1A73E8"));
+        lastActionView.setTextColor(Color.parseColor("#0D9488"));
         lastActionView.setPadding(0, dpToPx(10f), 0, 0);
         testCard.addView(lastActionView);
 
@@ -256,6 +256,24 @@ public class MainActivity extends Activity {
 
         setContentView(scrollView);
         refreshUiState();
+    }
+
+    /**
+     * Captures the current Activity window into a software Bitmap as a fallback if the user hasn't
+     * toggled the Accessibility Service off/on yet after updating.
+     */
+    public Bitmap captureActivityWindowBitmap() {
+        try {
+            View root = getWindow().getDecorView().getRootView();
+            if (root != null && root.getWidth() > 0 && root.getHeight() > 0) {
+                Bitmap b = Bitmap.createBitmap(root.getWidth(), root.getHeight(), Bitmap.Config.ARGB_8888);
+                Canvas c = new Canvas(b);
+                root.draw(c);
+                return b;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private LinearLayout buildCardContainer() {
@@ -285,7 +303,7 @@ public class MainActivity extends Activity {
         badge.setGravity(Gravity.CENTER);
         GradientDrawable badgeBg = new GradientDrawable();
         badgeBg.setShape(GradientDrawable.OVAL);
-        badgeBg.setColor(Color.parseColor("#202124"));
+        badgeBg.setColor(Color.parseColor("#0D9488"));
         badge.setBackground(badgeBg);
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dpToPx(26f), dpToPx(26f));
         badgeLp.rightMargin = dpToPx(12f);
@@ -330,14 +348,14 @@ public class MainActivity extends Activity {
 
         TextView keyBadge = new TextView(this);
         keyBadge.setText(keys);
-        keyBadge.setTextColor(Color.parseColor("#18191B"));
+        keyBadge.setTextColor(Color.parseColor("#0D9488"));
         keyBadge.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         keyBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         keyBadge.setPadding(dpToPx(10f), dpToPx(6f), dpToPx(10f), dpToPx(6f));
         GradientDrawable keyBg = new GradientDrawable();
         keyBg.setCornerRadius(dpToPx(8f));
-        keyBg.setColor(Color.parseColor("#F1F3F4"));
-        keyBg.setStroke(dpToPx(1f), Color.parseColor("#BDC1C6"));
+        keyBg.setColor(Color.parseColor("#F0FDFA"));
+        keyBg.setStroke(dpToPx(1f), Color.parseColor("#99F6E4"));
         keyBadge.setBackground(keyBg);
 
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(
@@ -381,7 +399,7 @@ public class MainActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(10f));
         if (primary) {
-            bg.setColor(Color.parseColor("#18191B"));
+            bg.setColor(Color.parseColor("#0D9488"));
             btn.setTextColor(Color.WHITE);
         } else {
             bg.setColor(Color.parseColor("#F1F3F4"));
@@ -441,12 +459,12 @@ public class MainActivity extends Activity {
             bg.setColor(Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(Color.parseColor("#137333"));
-            statusBanner.setText("✓ ACTIVE — Press Ctrl + Shift + D (Clipboard PNG) or Ctrl + Shift + C (Color Picker) anytime.");
+            statusBanner.setText("✓ SERVICE ACTIVE — Press Ctrl + Shift + D (Clipboard PNG) or Ctrl + Shift + C (Color Picker) anytime.");
         } else {
             bg.setColor(Color.parseColor("#FCE8E6"));
             bg.setStroke(dpToPx(1f), Color.parseColor("#FAD2CF"));
             statusBanner.setTextColor(Color.parseColor("#C5221F"));
-            statusBanner.setText("⚠ SETUP NEEDED — Complete Steps 1 & 2 below so shortcuts work across all apps.");
+            statusBanner.setText("⚠ SERVICE INACTIVE — Follow Steps 1 & 2 below to enable global shortcuts.");
         }
         statusBanner.setBackground(bg);
         lastActionView.setText("Status: " + TopBarDropService.lastActionMessage);
@@ -466,7 +484,7 @@ public class MainActivity extends Activity {
                     Canvas canvas = new Canvas(bmp);
                     Paint bgPaint = new Paint();
                     bgPaint.setShader(new LinearGradient(0, 0, 480, 280,
-                            Color.parseColor("#1A73E8"), Color.parseColor("#9334E6"), Shader.TileMode.CLAMP));
+                            Color.parseColor("#A3E635"), Color.parseColor("#0D9488"), Shader.TileMode.CLAMP));
                     canvas.drawRect(0, 0, 480, 280, bgPaint);
 
                     Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
