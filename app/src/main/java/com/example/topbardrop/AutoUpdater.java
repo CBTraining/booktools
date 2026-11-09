@@ -27,7 +27,8 @@ import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import javax.net.ssl.HttpsURLConnection;
 
@@ -48,6 +49,8 @@ public class AutoUpdater {
     private static final String RAW_APK_DEFAULT_URL =
             "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk";
 
+    private static final ExecutorService UPDATE_EXECUTOR = Executors.newSingleThreadExecutor();
+
     public static volatile String updateStatusText = "Up to date";
     public static volatile boolean updateAvailable = false;
     public static volatile String latestRemoteVersion = null;
@@ -64,9 +67,9 @@ public class AutoUpdater {
     public static String getInstalledVersionName(Context context) {
         try {
             PackageInfo pi = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return pi.versionName != null ? pi.versionName : "1.006";
+            return pi.versionName != null ? pi.versionName : "1.014";
         } catch (Exception e) {
-            return "1.006";
+            return "1.014";
         }
     }
 
@@ -78,7 +81,7 @@ public class AutoUpdater {
             }
             return pi.versionCode;
         } catch (Exception e) {
-            return 1006;
+            return 1014;
         }
     }
 
@@ -110,7 +113,7 @@ public class AutoUpdater {
             updateStatus(mainHandler, callbackRef, "Checking GitHub for updates...", updateAvailable);
         }
 
-        new Thread(new Runnable() {
+        UPDATE_EXECUTOR.execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -125,7 +128,10 @@ public class AutoUpdater {
                         return;
                     }
 
-                    final String remoteVer = versionJson.optString("version", localName);
+                    final String remoteVer = versionJson.optString(
+                            "versionName",
+                            versionJson.optString("version", localName)
+                    );
                     final int remoteCode = versionJson.optInt("versionCode", localCode);
                     String rawApkUrl = versionJson.optString("apkUrl", RAW_APK_DEFAULT_URL);
 
@@ -173,7 +179,7 @@ public class AutoUpdater {
                     );
                 }
             }
-        }).start();
+        });
     }
 
     private static void downloadAndInstallApk(
@@ -197,17 +203,21 @@ public class AutoUpdater {
                 byte[] buf = new byte[8192];
                 int read;
                 int downloaded = 0;
+                int lastReportedPct = -1;
                 while ((read = in.read(buf)) != -1) {
                     out.write(buf, 0, read);
                     downloaded += read;
                     if (totalBytes > 0) {
                         int pct = Math.min(100, (int) ((downloaded * 100L) / totalBytes));
-                        updateStatus(
-                                mainHandler,
-                                callbackRef,
-                                "Downloading v" + remoteVer + "... " + pct + "%",
-                                true
-                        );
+                        if (pct != lastReportedPct) {
+                            lastReportedPct = pct;
+                            updateStatus(
+                                    mainHandler,
+                                    callbackRef,
+                                    "Downloading v" + remoteVer + "... " + pct + "%",
+                                    true
+                            );
+                        }
                     }
                 }
                 out.flush();
@@ -310,43 +320,42 @@ public class AutoUpdater {
             }
 
             int sessionId = packageInstaller.createSession(params);
-            PackageInstaller.Session session = packageInstaller.openSession(sessionId);
-
-            try (InputStream in = new FileInputStream(apkFile);
-                 OutputStream out = session.openWrite("BookTools.apk", 0, apkFile.length())) {
-                byte[] buffer = new byte[8192];
-                int c;
-                while ((c = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, c);
+            try (PackageInstaller.Session session = packageInstaller.openSession(sessionId)) {
+                try (InputStream in = new FileInputStream(apkFile);
+                     OutputStream out = session.openWrite("BookTools.apk", 0, apkFile.length())) {
+                    byte[] buffer = new byte[8192];
+                    int c;
+                    while ((c = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, c);
+                    }
+                    session.fsync(out);
                 }
-                session.fsync(out);
-            }
 
-            // Clean up temporary APK from cache once streamed into PackageInstaller session
-            apkFile.delete();
-            pendingInstallApkFile = null;
+                // Clean up temporary APK from cache once streamed into PackageInstaller session
+                apkFile.delete();
+                pendingInstallApkFile = null;
 
-            Intent callbackIntent = new Intent(context, UpdateInstallReceiver.class);
-            callbackIntent.setAction("com.example.topbardrop.ACTION_INSTALL_COMMIT");
-            callbackIntent.setPackage(context.getPackageName());
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                flags |= PendingIntent.FLAG_MUTABLE;
-            }
-            PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    sessionId,
-                    callbackIntent,
-                    flags
-            );
+                Intent callbackIntent = new Intent(context, UpdateInstallReceiver.class);
+                callbackIntent.setAction("com.example.topbardrop.ACTION_INSTALL_COMMIT");
+                callbackIntent.setPackage(context.getPackageName());
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    flags |= PendingIntent.FLAG_MUTABLE;
+                }
+                PendingIntent pendingIntent = PendingIntent.getBroadcast(
+                        context,
+                        sessionId,
+                        callbackIntent,
+                        flags
+                );
 
-            String msg = "Installing v" + (latestRemoteVersion != null ? latestRemoteVersion : "") + "...";
-            updateStatusText = msg;
-            if (callback != null) {
-                callback.onStatusChanged(msg, true);
+                String msg = "Installing v" + (latestRemoteVersion != null ? latestRemoteVersion : "") + "...";
+                updateStatusText = msg;
+                if (callback != null) {
+                    callback.onStatusChanged(msg, true);
+                }
+                session.commit(pendingIntent.getIntentSender());
             }
-            session.commit(pendingIntent.getIntentSender());
-            session.close();
         } catch (Exception e) {
             String err = "Install error: " + e.getMessage();
             updateStatusText = err;

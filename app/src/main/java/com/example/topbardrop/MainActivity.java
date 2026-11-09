@@ -73,7 +73,6 @@ public class MainActivity extends Activity {
         int bgWindow = dark ? Color.parseColor("#121316") : Color.parseColor("#F1F3F4");
         int textPrimary = dark ? Color.parseColor("#F1F3F4") : Color.parseColor("#202124");
         int textSecondary = dark ? Color.parseColor("#9AA0A6") : Color.parseColor("#5F6368");
-        int dividerColor = dark ? Color.parseColor("#2D3036") : Color.parseColor("#E8EAED");
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
         ScrollView scrollView = new ScrollView(this);

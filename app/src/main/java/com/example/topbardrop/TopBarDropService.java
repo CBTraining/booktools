@@ -336,10 +336,61 @@ public class TopBarDropService extends AccessibilityService {
         // Capture a background snapshot BEFORE adding the popup so the popup card itself can
         // render a genuine blurred backdrop of the exact screen patch underneath it without
         // blurring the rest of the screen!
-        captureBackdropForPopupAndShow();
+        captureBackdropAndRun(new Runnable() {
+            @Override
+            public void run() {
+                openPopupAndProcessClipboard();
+            }
+        }, false);
     }
 
-    private void captureBackdropForPopupAndShow() {
+    private int getActiveDisplayId() {
+        try {
+            if (windowManager != null && windowManager.getDefaultDisplay() != null) {
+                return windowManager.getDefaultDisplay().getDisplayId();
+            }
+        } catch (Exception ignored) {
+        }
+        return Display.DEFAULT_DISPLAY;
+    }
+
+    @android.annotation.TargetApi(Build.VERSION_CODES.R)
+    private Bitmap extractSoftwareBitmap(ScreenshotResult screenshot) {
+        if (screenshot == null) return null;
+        try {
+            HardwareBuffer hb = screenshot.getHardwareBuffer();
+            ColorSpace cs = screenshot.getColorSpace();
+            if (hb != null) {
+                try {
+                    Bitmap hw = Bitmap.wrapHardwareBuffer(hb, cs);
+                    if (hw != null) {
+                        Bitmap sw = hw.copy(Bitmap.Config.ARGB_8888, false);
+                        hw.recycle();
+                        return sw;
+                    }
+                } finally {
+                    hb.close();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private void safeRemoveOverlayView(View view) {
+        if (view != null && windowManager != null) {
+            try {
+                windowManager.removeViewImmediate(view);
+            } catch (Exception ignored) {
+                try {
+                    windowManager.removeView(view);
+                } catch (Exception ignored2) {
+                }
+            }
+        }
+    }
+
+    private void captureBackdropAndRun(final Runnable openAction, final boolean isHistory) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             final boolean[] shown = new boolean[]{false};
             handler.postDelayed(new Runnable() {
@@ -347,47 +398,30 @@ public class TopBarDropService extends AccessibilityService {
                 public void run() {
                     if (!shown[0]) {
                         shown[0] = true;
-                        openPopupAndProcessClipboard();
+                        openAction.run();
                     }
                 }
-            }, 90);
-
-            int displayId = Display.DEFAULT_DISPLAY;
-            try {
-                if (windowManager != null && windowManager.getDefaultDisplay() != null) {
-                    displayId = windowManager.getDefaultDisplay().getDisplayId();
-                }
-            } catch (Exception ignored) {
-            }
+            }, 85L);
 
             try {
                 takeScreenshot(
-                        displayId,
+                        getActiveDisplayId(),
                         getMainExecutor(),
                         new TakeScreenshotCallback() {
                             @Override
                             public void onSuccess(ScreenshotResult screenshot) {
-                                try {
-                                    HardwareBuffer hb = screenshot.getHardwareBuffer();
-                                    ColorSpace cs = screenshot.getColorSpace();
-                                    if (hb != null) {
-                                        Bitmap hw = Bitmap.wrapHardwareBuffer(hb, cs);
-                                        if (hw != null) {
-                                            Bitmap sw = hw.copy(Bitmap.Config.ARGB_8888, false);
-                                            hw.recycle();
-                                            if (sw != null) {
-                                                updateCachedScreenBitmaps(sw);
-                                            }
-                                        }
-                                        hb.close();
-                                    }
-                                } catch (Exception ignored) {
+                                Bitmap sw = extractSoftwareBitmap(screenshot);
+                                if (sw != null) {
+                                    updateCachedScreenBitmaps(sw);
                                 }
                                 if (!shown[0]) {
                                     shown[0] = true;
-                                    openPopupAndProcessClipboard();
-                                } else if (popupCard != null) {
-                                    popupCard.invalidate();
+                                    openAction.run();
+                                } else {
+                                    View card = isHistory ? historyCard : popupCard;
+                                    if (card != null) {
+                                        card.invalidate();
+                                    }
                                 }
                             }
 
@@ -395,7 +429,7 @@ public class TopBarDropService extends AccessibilityService {
                             public void onFailure(int errorCode) {
                                 if (!shown[0]) {
                                     shown[0] = true;
-                                    openPopupAndProcessClipboard();
+                                    openAction.run();
                                 }
                             }
                         }
@@ -404,7 +438,7 @@ public class TopBarDropService extends AccessibilityService {
             } catch (Throwable ignored) {
             }
         }
-        openPopupAndProcessClipboard();
+        openAction.run();
     }
 
     private void updateCachedScreenBitmaps(Bitmap swBitmap) {
@@ -546,7 +580,7 @@ public class TopBarDropService extends AccessibilityService {
         footerHint.setPadding(0, dpToPx(10f), 0, 0);
         popupCard.addView(footerHint);
 
-        SwipeDismissTouchListener swipeListener = new SwipeDismissTouchListener();
+        SwipeDismissTouchListener swipeListener = new SwipeDismissTouchListener(false);
         headerRow.setOnTouchListener(swipeListener);
         subtitleView.setOnTouchListener(swipeListener);
         footerHint.setOnTouchListener(swipeListener);
@@ -739,16 +773,7 @@ public class TopBarDropService extends AccessibilityService {
             currentPreviewBitmap.recycle();
             currentPreviewBitmap = null;
         }
-        if (popupRoot != null && windowManager != null) {
-            try {
-                windowManager.removeViewImmediate(popupRoot);
-            } catch (Exception ignored) {
-                try {
-                    windowManager.removeView(popupRoot);
-                } catch (Exception ignored2) {
-                }
-            }
-        }
+        safeRemoveOverlayView(popupRoot);
         popupRoot = null;
         popupCard = null;
         popupShown = false;
@@ -872,6 +897,49 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
+    private static final class SavedPngResult {
+        final Uri uri;
+        final String fileName;
+
+        SavedPngResult(Uri uri, String fileName) {
+            this.uri = uri;
+            this.fileName = fileName;
+        }
+    }
+
+    private SavedPngResult writePngToDownloads(Bitmap bitmap, String baseName) throws Exception {
+        String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
+        String cleanBase = (baseName != null && !baseName.isEmpty())
+                ? baseName + "_dl"
+                : "clipboard_" + timestamp + "_dl";
+        String pngFileName = cleanBase + ".png";
+
+        Uri savedUri;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
+            values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+
+            savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (savedUri == null) {
+                throw new IllegalStateException("Could not create PNG in Downloads");
+            }
+            try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            }
+        } else {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (!dir.exists()) dir.mkdirs();
+            File outFile = new File(dir, pngFileName);
+            try (OutputStream out = new FileOutputStream(outFile)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            }
+            savedUri = Uri.fromFile(outFile);
+        }
+        return new SavedPngResult(savedUri, pngFileName);
+    }
+
     private void saveBitmapAsPngAndPopulatePopup(final Bitmap bitmap, final String baseName) {
         final int fullWidth = bitmap.getWidth();
         final int fullHeight = bitmap.getHeight();
@@ -881,35 +949,9 @@ public class TopBarDropService extends AccessibilityService {
             @Override
             public void run() {
                 try {
-                    String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
-                    String cleanBase = (baseName != null && !baseName.isEmpty())
-                            ? baseName + "_dl"
-                            : "clipboard_" + timestamp + "_dl";
-                    final String pngFileName = cleanBase + ".png";
-
-                    final Uri savedUri;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        ContentValues values = new ContentValues();
-                        values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
-                        values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
-                        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-
-                        savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                        if (savedUri == null) {
-                            throw new IllegalStateException("Could not create PNG in Downloads");
-                        }
-                        try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                        }
-                    } else {
-                        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                        if (!dir.exists()) dir.mkdirs();
-                        File outFile = new File(dir, pngFileName);
-                        try (OutputStream out = new FileOutputStream(outFile)) {
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                        }
-                        savedUri = Uri.fromFile(outFile);
-                    }
+                    SavedPngResult saved = writePngToDownloads(bitmap, baseName);
+                    final Uri savedUri = saved.uri;
+                    final String pngFileName = saved.fileName;
 
                     // Create a lightweight downscaled thumbnail for the popup preview and immediately
                     // recycle the full-resolution bitmap so large 4K clipboard images never sit in RAM.
@@ -1084,16 +1126,26 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private class SwipeDismissTouchListener implements View.OnTouchListener {
+        private final boolean isHistory;
         private float downRawX;
         private boolean swiping;
         private final int touchSlop = ViewConfiguration.get(TopBarDropService.this).getScaledTouchSlop();
 
+        SwipeDismissTouchListener(boolean isHistory) {
+            this.isHistory = isHistory;
+        }
+
         @Override
         public boolean onTouch(View v, MotionEvent event) {
             if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissPopup(true);
+                if (isHistory) {
+                    dismissHistoryPopup(true);
+                } else {
+                    dismissPopup(true);
+                }
                 return true;
             }
+            final View activeCard = isHistory ? historyCard : popupCard;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downRawX = event.getRawX();
@@ -1105,26 +1157,30 @@ public class TopBarDropService extends AccessibilityService {
                     if (Math.abs(dx) > touchSlop) {
                         swiping = true;
                     }
-                    if (swiping && popupCard != null) {
-                        popupCard.setTranslationX(dx);
-                        popupCard.invalidate();
+                    if (swiping && activeCard != null) {
+                        activeCard.setTranslationX(dx);
+                        activeCard.invalidate();
                         float progress = Math.min(1f, Math.abs(dx) / (float) dpToPx(180f));
-                        popupCard.setAlpha(Math.max(0.15f, 1f - progress * 0.85f));
+                        activeCard.setAlpha(Math.max(0.15f, 1f - progress * 0.85f));
                         float scale = 1f - progress * 0.12f;
-                        popupCard.setScaleX(scale);
-                        popupCard.setScaleY(scale);
+                        activeCard.setScaleX(scale);
+                        activeCard.setScaleY(scale);
                     }
                     return true;
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (swiping && popupCard != null) {
+                    if (swiping && activeCard != null) {
                         float totalDx = event.getRawX() - downRawX;
                         if (Math.abs(totalDx) > dpToPx(65f)) {
-                            popupDismissing = true;
-                            final View rootToRemove = popupRoot;
+                            if (isHistory) {
+                                historyDismissing = true;
+                            } else {
+                                popupDismissing = true;
+                            }
+                            final View rootToRemove = isHistory ? historyRoot : popupRoot;
                             float targetX = totalDx > 0 ? dpToPx(260f) : -dpToPx(260f);
-                            popupCard.animate()
+                            activeCard.animate()
                                     .translationX(targetX)
                                     .scaleX(0.82f)
                                     .scaleY(0.82f)
@@ -1133,14 +1189,20 @@ public class TopBarDropService extends AccessibilityService {
                                     .withEndAction(new Runnable() {
                                         @Override
                                         public void run() {
-                                            if (popupRoot == rootToRemove) {
-                                                removePopupViewImmediate();
+                                            if (isHistory) {
+                                                if (historyRoot == rootToRemove) {
+                                                    removeHistoryPopupImmediate();
+                                                }
+                                            } else {
+                                                if (popupRoot == rootToRemove) {
+                                                    removePopupViewImmediate();
+                                                }
                                             }
                                         }
                                     })
                                     .start();
                         } else {
-                            popupCard.animate()
+                            activeCard.animate()
                                     .translationX(0f)
                                     .scaleX(1f)
                                     .scaleY(1f)
@@ -1247,17 +1309,9 @@ public class TopBarDropService extends AccessibilityService {
             }
         }, 220);
 
-        int displayId = Display.DEFAULT_DISPLAY;
-        try {
-            if (windowManager != null && windowManager.getDefaultDisplay() != null) {
-                displayId = windowManager.getDefaultDisplay().getDisplayId();
-            }
-        } catch (Exception ignored) {
-        }
-
         try {
             takeScreenshot(
-                    displayId,
+                    getActiveDisplayId(),
                     getMainExecutor(),
                     new TakeScreenshotCallback() {
                         @Override
@@ -1265,21 +1319,7 @@ public class TopBarDropService extends AccessibilityService {
                             if (!colorPickerCaptureInFlight) return;
                             colorPickerCaptureInFlight = false;
 
-                            Bitmap swBitmap = null;
-                            try {
-                                HardwareBuffer hb = screenshot.getHardwareBuffer();
-                                ColorSpace cs = screenshot.getColorSpace();
-                                if (hb != null) {
-                                    Bitmap hw = Bitmap.wrapHardwareBuffer(hb, cs);
-                                    if (hw != null) {
-                                        swBitmap = hw.copy(Bitmap.Config.ARGB_8888, false);
-                                        hw.recycle();
-                                    }
-                                    hb.close();
-                                }
-                            } catch (Exception ignored) {
-                            }
-
+                            Bitmap swBitmap = extractSoftwareBitmap(screenshot);
                             if (swBitmap != null) {
                                 updateCachedScreenBitmaps(swBitmap);
                                 showColorPickerOverlay(swBitmap, null);
@@ -1465,16 +1505,7 @@ public class TopBarDropService extends AccessibilityService {
         if (colorPickerCanvas != null) {
             colorPickerCanvas.cancelRunningAnimator();
         }
-        if (colorPickerRoot != null && windowManager != null) {
-            try {
-                windowManager.removeViewImmediate(colorPickerRoot);
-            } catch (Exception ignored) {
-                try {
-                    windowManager.removeView(colorPickerRoot);
-                } catch (Exception ignored2) {
-                }
-            }
-        }
+        safeRemoveOverlayView(colorPickerRoot);
         colorPickerRoot = null;
         colorPickerCanvas = null;
         colorPickerShown = false;
@@ -1564,8 +1595,6 @@ public class TopBarDropService extends AccessibilityService {
         private final Paint pixelPaint = new Paint();
         private final Paint gridLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glassTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint cardStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glassRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint subTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint bannerTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1593,14 +1622,6 @@ public class TopBarDropService extends AccessibilityService {
 
             glassTintPaint.setStyle(Paint.Style.FILL);
             glassTintPaint.setColor(dark ? Color.parseColor("#A6181A22") : Color.parseColor("#B8F4F8FC"));
-
-            cardStrokePaint.setStyle(Paint.Style.STROKE);
-            cardStrokePaint.setStrokeWidth(dpToPx(1.8f));
-            cardStrokePaint.setColor(dark ? Color.parseColor("#992DD4BF") : Color.parseColor("#990D9488"));
-
-            glassRimPaint.setStyle(Paint.Style.STROKE);
-            glassRimPaint.setStrokeWidth(dpToPx(1f));
-            glassRimPaint.setColor(dark ? 0x55FFFFFF : 0xAAFFFFFF);
 
             textPaint.setColor(dark ? Color.WHITE : Color.parseColor("#181A1F"));
             textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
@@ -2155,16 +2176,7 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private void removeFocusProbeViewImmediate() {
-        if (focusProbeView != null && windowManager != null) {
-            try {
-                windowManager.removeViewImmediate(focusProbeView);
-            } catch (Exception ignored) {
-                try {
-                    windowManager.removeView(focusProbeView);
-                } catch (Exception ignored2) {
-                }
-            }
-        }
+        safeRemoveOverlayView(focusProbeView);
         focusProbeView = null;
     }
 
@@ -2234,34 +2246,8 @@ public class TopBarDropService extends AccessibilityService {
         int fullWidth = bitmap.getWidth();
         int fullHeight = bitmap.getHeight();
         try {
-            String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
-            String cleanBase = (baseName != null && !baseName.isEmpty())
-                    ? baseName + "_dl"
-                    : "clipboard_" + timestamp + "_dl";
-            String pngFileName = cleanBase + ".png";
-
-            Uri savedUri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
-                values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
-                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (savedUri == null) return;
-                try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                }
-            } else {
-                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!dir.exists()) dir.mkdirs();
-                File outFile = new File(dir, pngFileName);
-                try (OutputStream out = new FileOutputStream(outFile)) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-                }
-                savedUri = Uri.fromFile(outFile);
-            }
-
-            ClipboardHistoryManager.addImageItem(this, savedUri, pngFileName, bitmap, fullWidth, fullHeight);
+            SavedPngResult saved = writePngToDownloads(bitmap, baseName);
+            ClipboardHistoryManager.addImageItem(this, saved.uri, saved.fileName, bitmap, fullWidth, fullHeight);
             handler.post(new Runnable() {
                 @Override
                 public void run() {
@@ -2299,75 +2285,12 @@ public class TopBarDropService extends AccessibilityService {
         dismissHistoryPopup(false);
         historySyncedCurrentClip = false;
 
-        captureBackdropAndOpenHistoryPopup();
-    }
-
-    private void captureBackdropAndOpenHistoryPopup() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            final boolean[] shown = new boolean[]{false};
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (!shown[0]) {
-                        shown[0] = true;
-                        buildAndShowHistoryPopupWindow();
-                    }
-                }
-            }, 85L);
-
-            int displayId = Display.DEFAULT_DISPLAY;
-            try {
-                if (windowManager != null && windowManager.getDefaultDisplay() != null) {
-                    displayId = windowManager.getDefaultDisplay().getDisplayId();
-                }
-            } catch (Exception ignored) {
+        captureBackdropAndRun(new Runnable() {
+            @Override
+            public void run() {
+                buildAndShowHistoryPopupWindow();
             }
-
-            try {
-                takeScreenshot(
-                        displayId,
-                        getMainExecutor(),
-                        new TakeScreenshotCallback() {
-                            @Override
-                            public void onSuccess(ScreenshotResult screenshot) {
-                                try {
-                                    HardwareBuffer hb = screenshot.getHardwareBuffer();
-                                    ColorSpace cs = screenshot.getColorSpace();
-                                    if (hb != null) {
-                                        Bitmap hw = Bitmap.wrapHardwareBuffer(hb, cs);
-                                        if (hw != null) {
-                                            Bitmap sw = hw.copy(Bitmap.Config.ARGB_8888, false);
-                                            hw.recycle();
-                                            if (sw != null) {
-                                                updateCachedScreenBitmaps(sw);
-                                            }
-                                        }
-                                        hb.close();
-                                    }
-                                } catch (Exception ignored) {
-                                }
-                                if (!shown[0]) {
-                                    shown[0] = true;
-                                    buildAndShowHistoryPopupWindow();
-                                } else if (historyCard != null) {
-                                    historyCard.invalidate();
-                                }
-                            }
-
-                            @Override
-                            public void onFailure(int errorCode) {
-                                if (!shown[0]) {
-                                    shown[0] = true;
-                                    buildAndShowHistoryPopupWindow();
-                                }
-                            }
-                        }
-                );
-                return;
-            } catch (Throwable ignored) {
-            }
-        }
-        buildAndShowHistoryPopupWindow();
+        }, true);
     }
 
     private void buildAndShowHistoryPopupWindow() {
@@ -2487,7 +2410,7 @@ public class TopBarDropService extends AccessibilityService {
         footerHint.setPadding(0, dpToPx(10f), 0, 0);
         historyCard.addView(footerHint);
 
-        HistorySwipeDismissListener swipeListener = new HistorySwipeDismissListener();
+        SwipeDismissTouchListener swipeListener = new SwipeDismissTouchListener(true);
         headerRow.setOnTouchListener(swipeListener);
         historySubtitleView.setOnTouchListener(swipeListener);
         footerHint.setOnTouchListener(swipeListener);
@@ -2596,7 +2519,6 @@ public class TopBarDropService extends AccessibilityService {
         int textMuted = dark ? Color.parseColor("#A8B0BA") : Color.parseColor("#68707A");
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
         int rowBgColor = dark ? Color.parseColor("#6612151C") : Color.parseColor("#88FFFFFF");
-        int rowStrokeColor = dark ? Color.parseColor("#442DD4BF") : Color.parseColor("#440D9488");
 
         List<ClipboardHistoryManager.HistoryItem> items = ClipboardHistoryManager.getItems(this);
 
@@ -2642,7 +2564,7 @@ public class TopBarDropService extends AccessibilityService {
 
         for (int i = 0; i < items.size(); i++) {
             final ClipboardHistoryManager.HistoryItem item = items.get(i);
-            View rowView = createHistoryRowView(item, i, dark, textPrimary, textSecondary, textMuted, accentTeal, rowBgColor, rowStrokeColor);
+            View rowView = createHistoryRowView(item, i, dark, textPrimary, textSecondary, textMuted, accentTeal, rowBgColor);
             LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -2662,8 +2584,7 @@ public class TopBarDropService extends AccessibilityService {
             int textSecondary,
             int textMuted,
             int accentTeal,
-            int rowBgColor,
-            int rowStrokeColor
+            int rowBgColor
     ) {
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -2943,16 +2864,7 @@ public class TopBarDropService extends AccessibilityService {
 
     private void removeHistoryPopupImmediate() {
         recycleActiveHistoryThumbBitmaps();
-        if (historyRoot != null && windowManager != null) {
-            try {
-                windowManager.removeViewImmediate(historyRoot);
-            } catch (Exception ignored) {
-                try {
-                    windowManager.removeView(historyRoot);
-                } catch (Exception ignored2) {
-                }
-            }
-        }
+        safeRemoveOverlayView(historyRoot);
         historyRoot = null;
         historyCard = null;
         historyItemsContainer = null;
@@ -2960,80 +2872,6 @@ public class TopBarDropService extends AccessibilityService {
         historyShown = false;
         historyDismissing = false;
         releaseScreenBitmapsIfIdle();
-    }
-
-    private class HistorySwipeDismissListener implements View.OnTouchListener {
-        private float downRawX;
-        private boolean swiping;
-        private final int touchSlop = ViewConfiguration.get(TopBarDropService.this).getScaledTouchSlop();
-
-        @Override
-        public boolean onTouch(View v, MotionEvent event) {
-            if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissHistoryPopup(true);
-                return true;
-            }
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    downRawX = event.getRawX();
-                    swiping = false;
-                    return true;
-
-                case MotionEvent.ACTION_MOVE:
-                    float dx = event.getRawX() - downRawX;
-                    if (Math.abs(dx) > touchSlop) {
-                        swiping = true;
-                    }
-                    if (swiping && historyCard != null) {
-                        historyCard.setTranslationX(dx);
-                        historyCard.invalidate();
-                        float progress = Math.min(1f, Math.abs(dx) / (float) dpToPx(180f));
-                        historyCard.setAlpha(Math.max(0.15f, 1f - progress * 0.85f));
-                        float scale = 1f - progress * 0.12f;
-                        historyCard.setScaleX(scale);
-                        historyCard.setScaleY(scale);
-                    }
-                    return true;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (swiping && historyCard != null) {
-                        float totalDx = event.getRawX() - downRawX;
-                        if (Math.abs(totalDx) > dpToPx(65f)) {
-                            historyDismissing = true;
-                            final View rootToRemove = historyRoot;
-                            float targetX = totalDx > 0 ? dpToPx(260f) : -dpToPx(260f);
-                            historyCard.animate()
-                                    .translationX(targetX)
-                                    .scaleX(0.82f)
-                                    .scaleY(0.82f)
-                                    .alpha(0f)
-                                    .setDuration(150)
-                                    .withEndAction(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            if (historyRoot == rootToRemove) {
-                                                removeHistoryPopupImmediate();
-                                            }
-                                        }
-                                    })
-                                    .start();
-                        } else {
-                            historyCard.animate()
-                                    .translationX(0f)
-                                    .scaleX(1f)
-                                    .scaleY(1f)
-                                    .alpha(1f)
-                                    .setDuration(150)
-                                    .setInterpolator(new OvershootInterpolator(1.1f))
-                                    .start();
-                        }
-                    }
-                    swiping = false;
-                    return true;
-            }
-            return false;
-        }
     }
 
     private class HistoryRootView extends FrameLayout {
