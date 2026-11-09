@@ -1,9 +1,6 @@
 package com.example.topbardrop;
 
-import android.content.ContentResolver;
-import android.content.ContentValues;
 import android.content.Context;
-import android.database.Cursor;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaExtractor;
@@ -20,20 +17,13 @@ import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.Matrix;
-import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
-import android.provider.MediaStore;
-import android.provider.OpenableColumns;
 import android.view.Surface;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -114,35 +104,7 @@ public final class VideoCompressor {
     }
 
     public static VideoInfo inspectVideo(Context context, Uri videoUri) {
-        String displayName = "video.mp4";
-        long sizeBytes = 0L;
-        ContentResolver resolver = context.getContentResolver();
-
-        try (Cursor cursor = resolver.query(videoUri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
-                    String n = cursor.getString(nameIdx);
-                    if (n != null && !n.trim().isEmpty()) {
-                        displayName = n.trim();
-                    }
-                }
-                int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
-                    sizeBytes = cursor.getLong(sizeIdx);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
-        if (sizeBytes <= 0L) {
-            try (InputStream in = resolver.openInputStream(videoUri)) {
-                if (in != null) {
-                    sizeBytes = in.available();
-                }
-            } catch (Exception ignored) {
-            }
-        }
+        MediaToolUtils.FileMeta fileMeta = MediaToolUtils.queryFileMeta(context, videoUri, "video.mp4");
 
         long durationMs = 0L;
         int width = 1280;
@@ -176,7 +138,7 @@ public final class VideoCompressor {
             }
         }
 
-        return new VideoInfo(displayName, sizeBytes, durationMs, width, height, rotation);
+        return new VideoInfo(fileMeta.displayName, fileMeta.sizeBytes, durationMs, width, height, rotation);
     }
 
     public static void compressVideoAsync(
@@ -251,9 +213,9 @@ public final class VideoCompressor {
                     throw new IOException("Compressed output file was empty.");
                 }
 
-                String baseName = stripExtension(info.displayName);
+                String baseName = MediaToolUtils.stripExtension(info.displayName, "video");
                 String outFileName = baseName + "_50mb.mp4";
-                Uri savedUri = saveMp4ToDownloads(appContext, tempOutput, outFileName);
+                Uri savedUri = MediaToolUtils.saveFileToDownloads(appContext, tempOutput, outFileName, "video/mp4");
                 if (savedUri == null) {
                     throw new IOException("Could not save compressed MP4 to Downloads.");
                 }
@@ -564,75 +526,8 @@ public final class VideoCompressor {
         return Math.max(160, aligned);
     }
 
-    private static String stripExtension(String fileName) {
-        if (fileName == null || fileName.trim().isEmpty()) {
-            return "video";
-        }
-        String clean = fileName.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
-        int dot = clean.lastIndexOf('.');
-        if (dot > 0) {
-            clean = clean.substring(0, dot);
-        }
-        return clean.isEmpty() ? "video" : clean;
-    }
-
-    private static Uri saveMp4ToDownloads(Context context, File tempFile, String outFileName) throws IOException {
-        ContentResolver resolver = context.getContentResolver();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, outFileName);
-            values.put(MediaStore.Downloads.MIME_TYPE, "video/mp4");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-            values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-            Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new IOException("Failed to create MediaStore entry in Downloads.");
-            }
-            try (InputStream in = new FileInputStream(tempFile);
-                 OutputStream out = resolver.openOutputStream(uri)) {
-                if (out == null) {
-                    throw new IOException("Failed to open Downloads output stream.");
-                }
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                out.flush();
-            }
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            resolver.update(uri, done, null, null);
-            return uri;
-        } else {
-            File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!downloadsDir.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                downloadsDir.mkdirs();
-            }
-            File target = new File(downloadsDir, outFileName);
-            try (InputStream in = new FileInputStream(tempFile);
-                 OutputStream out = new java.io.FileOutputStream(target)) {
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                out.flush();
-            }
-            return Uri.fromFile(target);
-        }
-    }
-
     public static String formatBytes(long bytes) {
-        if (bytes <= 0) return "0 MB";
-        double mb = bytes / (1024.0 * 1024.0);
-        if (mb >= 1.0) {
-            return String.format(java.util.Locale.US, "%.1f MB", mb);
-        }
-        double kb = bytes / 1024.0;
-        return String.format(java.util.Locale.US, "%.0f KB", kb);
+        return MediaToolUtils.formatBytes(bytes);
     }
 
     /**

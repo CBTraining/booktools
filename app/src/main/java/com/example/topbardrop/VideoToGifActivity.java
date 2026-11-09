@@ -3,7 +3,6 @@ package com.example.topbardrop;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -12,12 +11,8 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
-import android.graphics.drawable.ClipDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -89,6 +84,7 @@ public class VideoToGifActivity extends Activity {
     @Override
     protected void onDestroy() {
         cancelFlag.set(true);
+        VideoToGifConverter.releasePreviewRetriever();
         if (currentPreviewBitmap != null && !currentPreviewBitmap.isRecycled()) {
             currentPreviewBitmap.recycle();
             currentPreviewBitmap = null;
@@ -96,13 +92,8 @@ public class VideoToGifActivity extends Activity {
         super.onDestroy();
     }
 
-    private boolean isDarkMode() {
-        int nightModeFlags = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return nightModeFlags == Configuration.UI_MODE_NIGHT_YES;
-    }
-
     private void buildUi() {
-        boolean dark = isDarkMode();
+        boolean dark = MediaToolUtils.isDarkMode(this);
 
         int bgColor = dark ? Color.parseColor("#111318") : Color.parseColor("#F5F7FA");
         int cardColor = dark ? Color.parseColor("#1A1D24") : Color.parseColor("#FFFFFF");
@@ -119,16 +110,16 @@ public class VideoToGifActivity extends Activity {
 
         FrameLayout outerRoot = new FrameLayout(this);
         outerRoot.setBackgroundColor(bgColor);
-        int outerPad = dpToPx(16f);
+        int outerPad = dp(16f);
         outerRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int cardPad = dpToPx(18f);
+        int cardPad = dp(18f);
         card.setPadding(cardPad, cardPad, cardPad, cardPad);
 
         GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setCornerRadius(dpToPx(18f));
+        cardBg.setCornerRadius(dp(18f));
         cardBg.setColor(cardColor);
         card.setBackground(cardBg);
 
@@ -139,8 +130,8 @@ public class VideoToGifActivity extends Activity {
 
         ImageView iconView = new ImageView(this);
         iconView.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(28f), dpToPx(28f));
-        iconLp.rightMargin = dpToPx(10f);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(28f), dp(28f));
+        iconLp.rightMargin = dp(10f);
         headerRow.addView(iconView, iconLp);
 
         LinearLayout titleCol = new LinearLayout(this);
@@ -168,7 +159,7 @@ public class VideoToGifActivity extends Activity {
         closeX.setText("✕");
         closeX.setTextColor(textSecondary);
         closeX.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        closeX.setPadding(dpToPx(10f), dpToPx(4f), dpToPx(4f), dpToPx(4f));
+        closeX.setPadding(dp(10f), dp(4f), dp(4f), dp(4f));
         closeX.setOnClickListener(v -> {
             cancelFlag.set(true);
             finish();
@@ -179,7 +170,7 @@ public class VideoToGifActivity extends Activity {
         // 2. Live Frame Preview Box
         FrameLayout previewContainer = new FrameLayout(this);
         GradientDrawable previewBg = new GradientDrawable();
-        previewBg.setCornerRadius(dpToPx(14f));
+        previewBg.setCornerRadius(dp(14f));
         previewBg.setColor(surfaceColor);
         previewContainer.setBackground(previewBg);
 
@@ -187,10 +178,10 @@ public class VideoToGifActivity extends Activity {
         framePreviewView.setScaleType(ImageView.ScaleType.FIT_CENTER);
         FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(170f),
+                dp(170f),
                 Gravity.CENTER
         );
-        int imgPad = dpToPx(8f);
+        int imgPad = dp(8f);
         framePreviewView.setPadding(imgPad, imgPad, imgPad, imgPad);
         previewContainer.addView(framePreviewView, imgLp);
 
@@ -199,9 +190,9 @@ public class VideoToGifActivity extends Activity {
         previewTimestampBadge.setTextColor(Color.WHITE);
         previewTimestampBadge.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         previewTimestampBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        previewTimestampBadge.setPadding(dpToPx(10f), dpToPx(4f), dpToPx(10f), dpToPx(4f));
+        previewTimestampBadge.setPadding(dp(10f), dp(4f), dp(10f), dp(4f));
         GradientDrawable tsBg = new GradientDrawable();
-        tsBg.setCornerRadius(dpToPx(8f));
+        tsBg.setCornerRadius(dp(8f));
         tsBg.setColor(Color.parseColor("#B8111318"));
         previewTimestampBadge.setBackground(tsBg);
         FrameLayout.LayoutParams tsLp = new FrameLayout.LayoutParams(
@@ -209,28 +200,27 @@ public class VideoToGifActivity extends Activity {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.RIGHT
         );
-        tsLp.rightMargin = dpToPx(10f);
-        tsLp.bottomMargin = dpToPx(10f);
+        tsLp.rightMargin = dp(10f);
+        tsLp.bottomMargin = dp(10f);
         previewContainer.addView(previewTimestampBadge, tsLp);
 
         LinearLayout.LayoutParams prevBoxLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        prevBoxLp.topMargin = dpToPx(12f);
+        prevBoxLp.topMargin = dp(12f);
         card.addView(previewContainer, prevBoxLp);
 
         // 3. Start / End Trim Range Section
         LinearLayout trimBox = new LinearLayout(this);
         trimBox.setOrientation(LinearLayout.VERTICAL);
-        int trimPad = dpToPx(14f);
-        trimBox.setPadding(trimPad, dpToPx(10f), trimPad, dpToPx(12f));
+        int trimPad = dp(14f);
+        trimBox.setPadding(trimPad, dp(10f), trimPad, dp(12f));
         GradientDrawable trimBg = new GradientDrawable();
-        trimBg.setCornerRadius(dpToPx(14f));
+        trimBg.setCornerRadius(dp(14f));
         trimBg.setColor(surfaceColor);
         trimBox.setBackground(trimBg);
 
-        // Top row of labels: Start | GIF Length | End
         LinearLayout labelsRow = new LinearLayout(this);
         labelsRow.setOrientation(LinearLayout.HORIZONTAL);
         labelsRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -260,13 +250,12 @@ public class VideoToGifActivity extends Activity {
 
         trimBox.addView(labelsRow);
 
-        // Dual-thumb interactive range bar
         trimRangeBar = new TrimRangeBarView(this, dark);
         LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(42f)
+                dp(42f)
         );
-        barLp.topMargin = dpToPx(6f);
+        barLp.topMargin = dp(6f);
         trimBox.addView(trimRangeBar, barLp);
 
         metaSubtitleView = new TextView(this);
@@ -274,33 +263,33 @@ public class VideoToGifActivity extends Activity {
         metaSubtitleView.setTextColor(textSecondary);
         metaSubtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         metaSubtitleView.setGravity(Gravity.CENTER);
-        metaSubtitleView.setPadding(0, dpToPx(2f), 0, 0);
+        metaSubtitleView.setPadding(0, dp(2f), 0, 0);
         trimBox.addView(metaSubtitleView);
 
         LinearLayout.LayoutParams trimBoxLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        trimBoxLp.topMargin = dpToPx(10f);
+        trimBoxLp.topMargin = dp(10f);
         card.addView(trimBox, trimBoxLp);
 
         // 4. Progress Bar + Status Text
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
         progressBar.setProgress(0);
-        progressBar.setProgressDrawable(buildSmoothProgressDrawable(dark, accentTeal));
+        progressBar.setProgressDrawable(MediaToolUtils.buildSmoothProgressDrawable(this, dark, accentTeal));
         LinearLayout.LayoutParams progLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(10f)
+                dp(10f)
         );
-        progLp.topMargin = dpToPx(12f);
+        progLp.topMargin = dp(12f);
         card.addView(progressBar, progLp);
 
         statusTextView = new TextView(this);
         statusTextView.setText("Select your Start & End times above, then click 'Create GIF (<50mb)'.");
         statusTextView.setTextColor(textSecondary);
         statusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        statusTextView.setPadding(0, dpToPx(8f), 0, 0);
+        statusTextView.setPadding(0, dp(8f), 0, 0);
         card.addView(statusTextView);
 
         // 5. Bottom Action Buttons Row
@@ -311,25 +300,25 @@ public class VideoToGifActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        btnRowLp.topMargin = dpToPx(14f);
+        btnRowLp.topMargin = dp(14f);
 
-        createGifBtn = createFlatButton(dark, "Create GIF (<50mb)", true);
+        createGifBtn = MediaToolUtils.createFlatButton(this, dark, "Create GIF (<50mb)", true);
         createGifBtn.setOnClickListener(v -> startGifConversion());
         LinearLayout.LayoutParams createLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
+                dp(38f)
         );
-        createLp.rightMargin = dpToPx(8f);
+        createLp.rightMargin = dp(8f);
         btnRow.addView(createGifBtn, createLp);
 
-        cancelOrCloseBtn = createFlatButton(dark, "Cancel", false);
+        cancelOrCloseBtn = MediaToolUtils.createFlatButton(this, dark, "Cancel", false);
         cancelOrCloseBtn.setOnClickListener(v -> {
             cancelFlag.set(true);
             finish();
         });
         btnRow.addView(cancelOrCloseBtn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
+                dp(38f)
         ));
 
         card.addView(btnRow, btnRowLp);
@@ -344,62 +333,8 @@ public class VideoToGifActivity extends Activity {
         setContentView(outerRoot);
     }
 
-    private Drawable buildSmoothProgressDrawable(boolean dark, int accentTeal) {
-        GradientDrawable track = new GradientDrawable();
-        track.setCornerRadius(dpToPx(6f));
-        track.setColor(dark ? Color.parseColor("#262B36") : Color.parseColor("#E2E8F0"));
-
-        GradientDrawable progressFill = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{
-                        Color.parseColor("#A3E635"),
-                        Color.parseColor("#2DD4BF"),
-                        accentTeal
-                }
-        );
-        progressFill.setCornerRadius(dpToPx(6f));
-        ClipDrawable clip = new ClipDrawable(progressFill, Gravity.LEFT, ClipDrawable.HORIZONTAL);
-
-        LayerDrawable layers = new LayerDrawable(new Drawable[]{track, clip});
-        layers.setId(0, android.R.id.background);
-        layers.setId(1, android.R.id.progress);
-        return layers;
-    }
-
-    private Button createFlatButton(boolean dark, String text, boolean primary) {
-        Button btn = new Button(this);
-        btn.setText(text);
-        btn.setAllCaps(false);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dpToPx(18f), 0, dpToPx(18f), 0);
-        btn.setMinHeight(0);
-        btn.setMinimumHeight(0);
-        btn.setMinWidth(0);
-        btn.setMinimumWidth(0);
-        btn.setStateListAnimator(null);
-        btn.setElevation(0f);
-
-        updateButtonAppearance(btn, dark, primary);
-        return btn;
-    }
-
-    private void updateButtonAppearance(Button btn, boolean dark, boolean primary) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(10f));
-        if (primary) {
-            bg.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
-            btn.setTextColor(dark ? Color.parseColor("#0B1312") : Color.WHITE);
-        } else {
-            bg.setColor(dark ? Color.parseColor("#252A34") : Color.parseColor("#E5E7EB"));
-            btn.setTextColor(dark ? Color.parseColor("#E5E7EB") : Color.parseColor("#1F2937"));
-        }
-        btn.setBackground(bg);
-    }
-
     private void handleIncomingIntent(Intent intent) {
-        sourceVideoUri = extractVideoUri(intent);
+        sourceVideoUri = MediaToolUtils.extractMediaUri(intent);
         if (sourceVideoUri == null) {
             fileTitleView.setText("No video file received");
             statusTextView.setText("Right-click a video file in Files → Open with → 'Convert video to GIF (<50mb)'.");
@@ -415,7 +350,6 @@ public class VideoToGifActivity extends Activity {
         videoInfo = VideoCompressor.inspectVideo(this, sourceVideoUri);
         totalDurationMs = Math.max(500L, videoInfo.durationMs);
         startMs = 0L;
-        // Default initial selection: up to first 8 seconds (or entire video if shorter), fully adjustable up to 100%
         endMs = Math.min(totalDurationMs, 8_000L);
         if (endMs <= startMs) {
             endMs = totalDurationMs;
@@ -437,7 +371,7 @@ public class VideoToGifActivity extends Activity {
     private void requestPreviewFrame(final long timeMs, boolean force) {
         if (sourceVideoUri == null) return;
         long now = System.currentTimeMillis();
-        if (!force && (now - lastPreviewRequestTimeMs < 95L)) {
+        if (!force && (now - lastPreviewRequestTimeMs < 45L)) {
             return;
         }
         lastPreviewRequestTimeMs = now;
@@ -485,10 +419,10 @@ public class VideoToGifActivity extends Activity {
                     public void onSuccess(VideoToGifConverter.GifResult result) {
                         isEncoding = false;
                         isFinished = true;
-                        boolean dark = isDarkMode();
+                        boolean dark = MediaToolUtils.isDarkMode(VideoToGifActivity.this);
                         progressBar.setProgress(100);
 
-                        String finalSizeStr = VideoCompressor.formatBytes(result.gifBytes);
+                        String finalSizeStr = MediaToolUtils.formatBytes(result.gifBytes);
                         statusTextView.setTypeface(Typeface.DEFAULT_BOLD);
                         statusTextView.setTextColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
                         statusTextView.setText("✓ File done! Saved to Downloads/" + result.savedFileName
@@ -496,7 +430,7 @@ public class VideoToGifActivity extends Activity {
 
                         createGifBtn.setVisibility(View.GONE);
                         cancelOrCloseBtn.setText("Done");
-                        updateButtonAppearance(cancelOrCloseBtn, dark, true);
+                        MediaToolUtils.updateButtonAppearance(VideoToGifActivity.this, cancelOrCloseBtn, dark, true);
 
                         TopBarDropService.lastActionMessage =
                                 "File done: Downloads/" + result.savedFileName + " (" + finalSizeStr + ")";
@@ -524,39 +458,8 @@ public class VideoToGifActivity extends Activity {
         return String.format(Locale.US, "%d:%02d.%d", minutes, seconds, tenths);
     }
 
-    private Uri extractVideoUri(Intent intent) {
-        if (intent == null) return null;
-        String action = intent.getAction();
-        if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
-            return intent.getData();
-        }
-        if (Intent.ACTION_SEND.equals(action)) {
-            Uri streamUri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
-            } else {
-                //noinspection deprecation
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            }
-            if (streamUri != null) {
-                return streamUri;
-            }
-        }
-        if (intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
-            Uri clipUri = intent.getClipData().getItemAt(0).getUri();
-            if (clipUri != null) {
-                return clipUri;
-            }
-        }
-        return intent.getData();
-    }
-
-    private int dpToPx(float dp) {
-        return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                dp,
-                getResources().getDisplayMetrics()
-        ));
+    private int dp(float value) {
+        return MediaToolUtils.dpToPx(this, value);
     }
 
     /**
@@ -567,7 +470,6 @@ public class VideoToGifActivity extends Activity {
         private static final int DRAG_START = 1;
         private static final int DRAG_END = 2;
 
-        private final boolean dark;
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint activeRangePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -577,7 +479,6 @@ public class VideoToGifActivity extends Activity {
 
         TrimRangeBarView(Context context, boolean dark) {
             super(context);
-            this.dark = dark;
             trackPaint.setColor(dark ? Color.parseColor("#14171F") : Color.parseColor("#CBD5E1"));
             thumbPaint.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
             thumbInnerPaint.setColor(dark ? Color.parseColor("#111318") : Color.WHITE);
@@ -590,12 +491,11 @@ public class VideoToGifActivity extends Activity {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float padH = dpToPx(14f);
+            float padH = dp(14f);
             float usableW = Math.max(1f, w - 2f * padH);
             float cy = h / 2f;
-            float trackHalfH = dpToPx(4.5f);
+            float trackHalfH = dp(4.5f);
 
-            // Background track
             rectF.set(padH, cy - trackHalfH, w - padH, cy + trackHalfH);
             canvas.drawRoundRect(rectF, trackHalfH, trackHalfH, trackPaint);
 
@@ -607,7 +507,6 @@ public class VideoToGifActivity extends Activity {
             float startX = padH + startFrac * usableW;
             float endX = padH + endFrac * usableW;
 
-            // Active selected segment gradient
             activeRangePaint.setShader(new LinearGradient(
                     startX, cy, endX, cy,
                     new int[]{
@@ -621,9 +520,8 @@ public class VideoToGifActivity extends Activity {
             rectF.set(startX, cy - trackHalfH, endX, cy + trackHalfH);
             canvas.drawRoundRect(rectF, trackHalfH, trackHalfH, activeRangePaint);
 
-            // Start & End handles
-            float thumbR = dpToPx(10.5f);
-            float innerR = dpToPx(4f);
+            float thumbR = dp(10.5f);
+            float innerR = dp(4f);
 
             canvas.drawCircle(startX, cy, thumbR, thumbPaint);
             canvas.drawCircle(startX, cy, innerR, thumbInnerPaint);
@@ -638,7 +536,7 @@ public class VideoToGifActivity extends Activity {
                 return false;
             }
             int w = getWidth();
-            float padH = dpToPx(14f);
+            float padH = dp(14f);
             float usableW = Math.max(1f, w - 2f * padH);
             float x = event.getX();
             float frac = Math.max(0f, Math.min(1f, (x - padH) / usableW));

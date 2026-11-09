@@ -2,20 +2,14 @@ package com.example.topbardrop;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.ClipDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.View;
 import android.view.Window;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -65,13 +59,8 @@ public class VideoCompressActivity extends Activity {
         super.onDestroy();
     }
 
-    private boolean isDarkMode() {
-        int nightModeFlags = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return nightModeFlags == Configuration.UI_MODE_NIGHT_YES;
-    }
-
     private void buildUi() {
-        boolean dark = isDarkMode();
+        boolean dark = MediaToolUtils.isDarkMode(this);
 
         int bgColor = dark ? Color.parseColor("#111318") : Color.parseColor("#F5F7FA");
         int cardColor = dark ? Color.parseColor("#1A1D24") : Color.parseColor("#FFFFFF");
@@ -88,16 +77,16 @@ public class VideoCompressActivity extends Activity {
 
         FrameLayout outerRoot = new FrameLayout(this);
         outerRoot.setBackgroundColor(bgColor);
-        int outerPad = dpToPx(18f);
+        int outerPad = dp(18f);
         outerRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int cardPad = dpToPx(20f);
+        int cardPad = dp(20f);
         card.setPadding(cardPad, cardPad, cardPad, cardPad);
 
         GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setCornerRadius(dpToPx(18f));
+        cardBg.setCornerRadius(dp(18f));
         cardBg.setColor(cardColor);
         card.setBackground(cardBg);
 
@@ -108,8 +97,8 @@ public class VideoCompressActivity extends Activity {
 
         ImageView iconView = new ImageView(this);
         iconView.setImageResource(R.drawable.ic_drop_arrow);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dpToPx(28f), dpToPx(28f));
-        iconLp.rightMargin = dpToPx(10f);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(28f), dp(28f));
+        iconLp.rightMargin = dp(10f);
         headerRow.addView(iconView, iconLp);
 
         LinearLayout titleCol = new LinearLayout(this);
@@ -135,7 +124,7 @@ public class VideoCompressActivity extends Activity {
         closeX.setText("✕");
         closeX.setTextColor(textSecondary);
         closeX.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        closeX.setPadding(dpToPx(10f), dpToPx(4f), dpToPx(4f), dpToPx(4f));
+        closeX.setPadding(dp(10f), dp(4f), dp(4f), dp(4f));
         closeX.setOnClickListener(v -> {
             cancelFlag.set(true);
             finish();
@@ -146,10 +135,10 @@ public class VideoCompressActivity extends Activity {
         // 2. Video Info Box
         LinearLayout infoBox = new LinearLayout(this);
         infoBox.setOrientation(LinearLayout.VERTICAL);
-        int infoPad = dpToPx(14f);
-        infoBox.setPadding(infoPad, dpToPx(12f), infoPad, dpToPx(12f));
+        int infoPad = dp(14f);
+        infoBox.setPadding(infoPad, dp(12f), infoPad, dp(12f));
         GradientDrawable infoBg = new GradientDrawable();
-        infoBg.setCornerRadius(dpToPx(12f));
+        infoBg.setCornerRadius(dp(12f));
         infoBg.setColor(surfaceColor);
         infoBox.setBackground(infoBg);
 
@@ -166,33 +155,33 @@ public class VideoCompressActivity extends Activity {
         metaSubtitleView.setText("Calculating optimal bitrate for ~50MB target...");
         metaSubtitleView.setTextColor(textSecondary);
         metaSubtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        metaSubtitleView.setPadding(0, dpToPx(4f), 0, 0);
+        metaSubtitleView.setPadding(0, dp(4f), 0, 0);
         infoBox.addView(metaSubtitleView);
 
         LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        infoLp.topMargin = dpToPx(14f);
+        infoLp.topMargin = dp(14f);
         card.addView(infoBox, infoLp);
 
         // 3. Progress Bar + Status Text
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
         progressBar.setProgress(0);
-        progressBar.setProgressDrawable(buildSmoothProgressDrawable(dark, accentTeal));
+        progressBar.setProgressDrawable(MediaToolUtils.buildSmoothProgressDrawable(this, dark, accentTeal));
         LinearLayout.LayoutParams progLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(10f)
+                dp(10f)
         );
-        progLp.topMargin = dpToPx(16f);
+        progLp.topMargin = dp(16f);
         card.addView(progressBar, progLp);
 
         statusTextView = new TextView(this);
         statusTextView.setText("Starting offline hardware encoder...");
         statusTextView.setTextColor(textSecondary);
         statusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        statusTextView.setPadding(0, dpToPx(10f), 0, 0);
+        statusTextView.setPadding(0, dp(10f), 0, 0);
         card.addView(statusTextView);
 
         // 4. Bottom Action Button Row
@@ -203,16 +192,16 @@ public class VideoCompressActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
-        btnRowLp.topMargin = dpToPx(16f);
+        btnRowLp.topMargin = dp(16f);
 
-        cancelOrCloseBtn = createFlatButton(dark, "Cancel", false);
+        cancelOrCloseBtn = MediaToolUtils.createFlatButton(this, dark, "Cancel", false);
         cancelOrCloseBtn.setOnClickListener(v -> {
             cancelFlag.set(true);
             finish();
         });
         btnRow.addView(cancelOrCloseBtn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
+                dp(38f)
         ));
 
         card.addView(btnRow, btnRowLp);
@@ -227,62 +216,8 @@ public class VideoCompressActivity extends Activity {
         setContentView(outerRoot);
     }
 
-    private Drawable buildSmoothProgressDrawable(boolean dark, int accentTeal) {
-        GradientDrawable track = new GradientDrawable();
-        track.setCornerRadius(dpToPx(6f));
-        track.setColor(dark ? Color.parseColor("#262B36") : Color.parseColor("#E2E8F0"));
-
-        GradientDrawable progressFill = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{
-                        Color.parseColor("#A3E635"),
-                        Color.parseColor("#2DD4BF"),
-                        accentTeal
-                }
-        );
-        progressFill.setCornerRadius(dpToPx(6f));
-        ClipDrawable clip = new ClipDrawable(progressFill, Gravity.LEFT, ClipDrawable.HORIZONTAL);
-
-        LayerDrawable layers = new LayerDrawable(new Drawable[]{track, clip});
-        layers.setId(0, android.R.id.background);
-        layers.setId(1, android.R.id.progress);
-        return layers;
-    }
-
-    private Button createFlatButton(boolean dark, String text, boolean primary) {
-        Button btn = new Button(this);
-        btn.setText(text);
-        btn.setAllCaps(false);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dpToPx(18f), 0, dpToPx(18f), 0);
-        btn.setMinHeight(0);
-        btn.setMinimumHeight(0);
-        btn.setMinWidth(0);
-        btn.setMinimumWidth(0);
-        btn.setStateListAnimator(null);
-        btn.setElevation(0f);
-
-        updateButtonAppearance(btn, dark, primary);
-        return btn;
-    }
-
-    private void updateButtonAppearance(Button btn, boolean dark, boolean primary) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(10f));
-        if (primary) {
-            bg.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
-            btn.setTextColor(dark ? Color.parseColor("#0B1312") : Color.WHITE);
-        } else {
-            bg.setColor(dark ? Color.parseColor("#252A34") : Color.parseColor("#E5E7EB"));
-            btn.setTextColor(dark ? Color.parseColor("#E5E7EB") : Color.parseColor("#1F2937"));
-        }
-        btn.setBackground(bg);
-    }
-
     private void handleIncomingIntent(Intent intent) {
-        Uri videoUri = extractVideoUri(intent);
+        Uri videoUri = MediaToolUtils.extractMediaUri(intent);
         if (videoUri == null) {
             fileTitleView.setText("No video file received");
             metaSubtitleView.setText("Right-click a video file in Files → Open with → 'Compress video (~50mb)'.");
@@ -297,7 +232,7 @@ public class VideoCompressActivity extends Activity {
             @Override
             public void onMetadataReady(VideoCompressor.VideoInfo info, int targetWidth, int targetHeight, int targetBitrateKbps) {
                 fileTitleView.setText(info.displayName);
-                String origSizeStr = info.originalBytes > 0 ? VideoCompressor.formatBytes(info.originalBytes) : "Video";
+                String origSizeStr = info.originalBytes > 0 ? MediaToolUtils.formatBytes(info.originalBytes) : "Video";
                 long sec = Math.max(1L, info.durationMs / 1000L);
                 String durStr = (sec >= 60) ? ((sec / 60) + "m " + (sec % 60) + "s") : (sec + "s");
                 metaSubtitleView.setText(origSizeStr + " · " + durStr + " → " + targetWidth + "×" + targetHeight
@@ -312,13 +247,13 @@ public class VideoCompressActivity extends Activity {
 
             @Override
             public void onSuccess(VideoCompressor.CompressResult result) {
-                boolean dark = isDarkMode();
+                boolean dark = MediaToolUtils.isDarkMode(VideoCompressActivity.this);
                 progressBar.setProgress(100);
 
                 String origStr = result.originalBytes > 0
-                        ? (VideoCompressor.formatBytes(result.originalBytes) + " → ")
+                        ? (MediaToolUtils.formatBytes(result.originalBytes) + " → ")
                         : "";
-                String finalStr = VideoCompressor.formatBytes(result.compressedBytes);
+                String finalStr = MediaToolUtils.formatBytes(result.compressedBytes);
 
                 statusTextView.setTypeface(Typeface.DEFAULT_BOLD);
                 statusTextView.setTextColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
@@ -326,7 +261,7 @@ public class VideoCompressActivity extends Activity {
                         + " (" + origStr + finalStr + ")");
 
                 cancelOrCloseBtn.setText("Done");
-                updateButtonAppearance(cancelOrCloseBtn, dark, true);
+                MediaToolUtils.updateButtonAppearance(VideoCompressActivity.this, cancelOrCloseBtn, dark, true);
 
                 TopBarDropService.lastActionMessage =
                         "File done: Downloads/" + result.savedFileName + " (" + finalStr + ")";
@@ -343,38 +278,7 @@ public class VideoCompressActivity extends Activity {
         });
     }
 
-    private Uri extractVideoUri(Intent intent) {
-        if (intent == null) return null;
-        String action = intent.getAction();
-        if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
-            return intent.getData();
-        }
-        if (Intent.ACTION_SEND.equals(action)) {
-            Uri streamUri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
-            } else {
-                //noinspection deprecation
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            }
-            if (streamUri != null) {
-                return streamUri;
-            }
-        }
-        if (intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
-            Uri clipUri = intent.getClipData().getItemAt(0).getUri();
-            if (clipUri != null) {
-                return clipUri;
-            }
-        }
-        return intent.getData();
-    }
-
-    private int dpToPx(float dp) {
-        return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                dp,
-                getResources().getDisplayMetrics()
-        ));
+    private int dp(float value) {
+        return MediaToolUtils.dpToPx(this, value);
     }
 }

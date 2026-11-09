@@ -1,23 +1,17 @@
 package com.example.topbardrop;
 
-import android.content.ContentResolver;
-import android.content.ContentValues;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.MediaStore;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -26,11 +20,12 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 100% Offline Video-to-GIF Converter with Start/End Trim and <50MB guarantee.
- * Uses MediaMetadataRetriever for scaled frame extraction, fast RGB555 Median-Cut 256-color
- * quantization, and a table-driven 12-bit GIF89a LZW encoder.
+ * Uses MediaMetadataRetriever for scaled frame extraction, zero-allocation RGB555 Median-Cut
+ * 256-color quantization, and a table-driven 12-bit GIF89a LZW encoder.
  */
 public final class VideoToGifConverter {
 
@@ -48,6 +43,12 @@ public final class VideoToGifConverter {
         t.setDaemon(true);
         return t;
     });
+
+    // Latest-only coalesced preview state + cached retriever for smooth 60fps scrubbing
+    private static final AtomicLong pendingPreviewTimeMs = new AtomicLong(-1L);
+    private static final AtomicBoolean previewWorkerRunning = new AtomicBoolean(false);
+    private static Uri cachedPreviewUri;
+    private static MediaMetadataRetriever cachedPreviewRetriever;
 
     private VideoToGifConverter() {
     }
@@ -81,7 +82,8 @@ public final class VideoToGifConverter {
     }
 
     /**
-     * Loads a scaled preview frame asynchronously for the Start/End trim scrubber.
+     * Coalesces rapid scrub events so only the most recent timestamp is decoded, and reuses
+     * a cached MediaMetadataRetriever for the active video Uri.
      */
     public static void loadPreviewFrameAsync(
             final Context context,
@@ -91,33 +93,76 @@ public final class VideoToGifConverter {
     ) {
         final Context appContext = context.getApplicationContext();
         final Handler mainHandler = new Handler(Looper.getMainLooper());
+        pendingPreviewTimeMs.set(Math.max(0L, timeMs));
+
+        if (!previewWorkerRunning.compareAndSet(false, true)) {
+            return;
+        }
+
         PREVIEW_EXECUTOR.execute(() -> {
-            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-            Bitmap bmp = null;
             try {
-                retriever.setDataSource(appContext, videoUri);
-                long timeUs = Math.max(0L, timeMs * 1000L);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    bmp = retriever.getScaledFrameAtTime(
-                            timeUs,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                            480,
-                            480
-                    );
+                while (true) {
+                    long targetMs = pendingPreviewTimeMs.getAndSet(-1L);
+                    if (targetMs < 0L) {
+                        break;
+                    }
+                    Bitmap bmp = decodePreviewFrameCached(appContext, videoUri, targetMs);
+                    if (bmp != null) {
+                        final Bitmap finalBmp = bmp;
+                        mainHandler.post(() -> callback.onFrameReady(finalBmp));
+                    }
                 }
-                if (bmp == null) {
-                    bmp = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-                }
-            } catch (Exception ignored) {
             } finally {
-                try {
-                    retriever.release();
-                } catch (Exception ignored) {
+                previewWorkerRunning.set(false);
+                // If another scrub arrived right as we finished, drain it
+                if (pendingPreviewTimeMs.get() >= 0L) {
+                    loadPreviewFrameAsync(appContext, videoUri, pendingPreviewTimeMs.get(), callback);
                 }
             }
-            final Bitmap finalBmp = bmp;
-            mainHandler.post(() -> callback.onFrameReady(finalBmp));
         });
+    }
+
+    private static synchronized Bitmap decodePreviewFrameCached(Context context, Uri videoUri, long timeMs) {
+        try {
+            if (cachedPreviewRetriever == null || cachedPreviewUri == null || !cachedPreviewUri.equals(videoUri)) {
+                releasePreviewRetrieverInternal();
+                cachedPreviewRetriever = new MediaMetadataRetriever();
+                cachedPreviewRetriever.setDataSource(context, videoUri);
+                cachedPreviewUri = videoUri;
+            }
+            long timeUs = Math.max(0L, timeMs * 1000L);
+            Bitmap bmp = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                bmp = cachedPreviewRetriever.getScaledFrameAtTime(
+                        timeUs,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        480,
+                        480
+                );
+            }
+            if (bmp == null) {
+                bmp = cachedPreviewRetriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            }
+            return bmp;
+        } catch (Exception e) {
+            releasePreviewRetrieverInternal();
+            return null;
+        }
+    }
+
+    public static void releasePreviewRetriever() {
+        PREVIEW_EXECUTOR.execute(VideoToGifConverter::releasePreviewRetrieverInternal);
+    }
+
+    private static synchronized void releasePreviewRetrieverInternal() {
+        if (cachedPreviewRetriever != null) {
+            try {
+                cachedPreviewRetriever.release();
+            } catch (Exception ignored) {
+            }
+            cachedPreviewRetriever = null;
+        }
+        cachedPreviewUri = null;
     }
 
     public static void convertVideoRangeToGifAsync(
@@ -141,7 +186,6 @@ public final class VideoToGifConverter {
                 long clipDurationMs = safeEndMs - safeStartMs;
                 double clipSec = Math.max(0.1, clipDurationMs / 1000.0);
 
-                // Choose frame rate and max resolution so the GIF is smooth and stays well under 50MB
                 int fps;
                 if (clipSec <= 10.0) {
                     fps = 12;
@@ -156,7 +200,6 @@ public final class VideoToGifConverter {
                 int totalFrames = Math.max(2, Math.min(260, (int) Math.round(clipSec * fps)));
                 int frameDelayCs = Math.max(2, (int) Math.round((clipDurationMs / 10.0) / totalFrames));
 
-                // Pick output dimensions based on total frame count so total size stays well under 50MB
                 int maxDim;
                 if (totalFrames <= 90) {
                     maxDim = 540;
@@ -191,7 +234,6 @@ public final class VideoToGifConverter {
                     int[] pixelBuffer = null;
 
                     for (int i = 0; i < totalFrames && !cancelFlag.get(); i++) {
-                        // Stop adding frames early if we ever approach our 48MB ceiling so file stays <50MB
                         if (fos.getChannel().position() >= MAX_GIF_BYTES - (512 * 1024)) {
                             break;
                         }
@@ -269,9 +311,9 @@ public final class VideoToGifConverter {
 
                 mainHandler.post(() -> callback.onProgress(99, "Saving GIF to Downloads..."));
 
-                String baseName = stripExtension(info.displayName);
+                String baseName = MediaToolUtils.stripExtension(info.displayName, "clip");
                 String outFileName = baseName + ".gif";
-                Uri savedUri = saveGifToDownloads(appContext, tempGif, outFileName);
+                Uri savedUri = MediaToolUtils.saveFileToDownloads(appContext, tempGif, outFileName, "image/gif");
                 if (savedUri == null) {
                     throw new IOException("Could not save GIF to Downloads.");
                 }
@@ -301,69 +343,8 @@ public final class VideoToGifConverter {
         });
     }
 
-    private static String stripExtension(String fileName) {
-        if (fileName == null || fileName.trim().isEmpty()) {
-            return "clip";
-        }
-        String clean = fileName.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
-        int dot = clean.lastIndexOf('.');
-        if (dot > 0) {
-            clean = clean.substring(0, dot);
-        }
-        return clean.isEmpty() ? "clip" : clean;
-    }
-
-    private static Uri saveGifToDownloads(Context context, File tempFile, String outFileName) throws IOException {
-        ContentResolver resolver = context.getContentResolver();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, outFileName);
-            values.put(MediaStore.Downloads.MIME_TYPE, "image/gif");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-            values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-            Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new IOException("Failed to create MediaStore entry in Downloads.");
-            }
-            try (InputStream in = new FileInputStream(tempFile);
-                 OutputStream out = resolver.openOutputStream(uri)) {
-                if (out == null) {
-                    throw new IOException("Failed to open Downloads output stream.");
-                }
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                out.flush();
-            }
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            resolver.update(uri, done, null, null);
-            return uri;
-        } else {
-            File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!downloadsDir.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                downloadsDir.mkdirs();
-            }
-            File target = new File(downloadsDir, outFileName);
-            try (InputStream in = new FileInputStream(tempFile);
-                 OutputStream out = new FileOutputStream(target)) {
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                out.flush();
-            }
-            return Uri.fromFile(target);
-        }
-    }
-
     /**
-     * Self-contained, zero-dependency GIF89a animated encoder with RGB555 Median-Cut
+     * Self-contained, zero-allocation GIF89a animated encoder with RGB555 Median-Cut
      * 256-color quantization and table-driven 12-bit LZW compression.
      */
     private static final class Gif89aWriter {
@@ -374,7 +355,10 @@ public final class VideoToGifConverter {
         private final byte[] paletteRgb = new byte[256 * 3];
         private final int[] histogram = new int[32768];
         private final byte[] rgb555ToPalette = new byte[32768];
-        // Flat LZW transition table: [prefixCode * 256 + nextByte] -> code (-1 if absent)
+        // Pre-allocated counting-sort buffers so Median-Cut splits perform 0 heap allocations
+        private final int[] sortCounts = new int[32];
+        private final int[] sortOffsets = new int[32];
+        private final int[] sortScratch = new int[32768];
         private final int[] lzwTable = new int[4096 * 256];
         private final byte[] subBlock = new byte[256];
 
@@ -386,14 +370,12 @@ public final class VideoToGifConverter {
         }
 
         void writeHeader() throws IOException {
-            // GIF89a signature
             out.write("GIF89a".getBytes(StandardCharsets.US_ASCII));
-            // Logical Screen Descriptor (no global color table; each frame has a tailored 256-color local palette)
             writeShortLE(width);
             writeShortLE(height);
-            out.write(0x70); // GCT=0, color resolution=7 (8 bits), sort=0, size=0
-            out.write(0);    // Background color index
-            out.write(0);    // Pixel aspect ratio
+            out.write(0x70);
+            out.write(0);
+            out.write(0);
 
             // Netscape 2.0 Application Extension for infinite looping
             out.write(0x21);
@@ -402,7 +384,7 @@ public final class VideoToGifConverter {
             out.write("NETSCAPE2.0".getBytes(StandardCharsets.US_ASCII));
             out.write(3);
             out.write(1);
-            writeShortLE(0); // Loop count = 0 (infinite)
+            writeShortLE(0);
             out.write(0);
         }
 
@@ -413,18 +395,18 @@ public final class VideoToGifConverter {
             out.write(0x21);
             out.write(0xF9);
             out.write(4);
-            out.write(0x04); // Disposal method = 1 (do not dispose), no transparency
+            out.write(0x04);
             writeShortLE(delayCentiseconds);
-            out.write(0);    // Transparent color index (unused)
-            out.write(0);    // Block terminator
+            out.write(0);
+            out.write(0);
 
             // 2. Image Descriptor with 256-color Local Color Table
             out.write(0x2C);
-            writeShortLE(0); // Left
-            writeShortLE(0); // Top
+            writeShortLE(0);
+            writeShortLE(0);
             writeShortLE(width);
             writeShortLE(height);
-            out.write(0x87); // Local Color Table flag (0x80) | size=7 (2^(7+1) = 256 colors)
+            out.write(0x87);
 
             // 3. 256-color Local Color Table (768 bytes)
             out.write(paletteRgb, 0, 768);
@@ -470,7 +452,6 @@ public final class VideoToGifConverter {
             }
 
             while (boxes.size() < 256) {
-                // Find the splittable box with the largest pixel count * volume score
                 int bestIdx = -1;
                 long bestScore = -1L;
                 for (int i = 0; i < boxes.size(); i++) {
@@ -572,23 +553,23 @@ public final class VideoToGifConverter {
             return new ColorBox(start, end, count, rMin, rMax, gMin, gMax, bMin, bMax);
         }
 
-        private static void sortColorSlice(int[] colors, int start, int end, int axis) {
-            // Counting sort on 5-bit channel value [0..31] -> O(N) instead of O(N log N)
-            int[] counts = new int[32];
+        private void sortColorSlice(int[] colors, int start, int end, int axis) {
+            Arrays.fill(sortCounts, 0);
             int shift = (axis == 0) ? 10 : ((axis == 1) ? 5 : 0);
             for (int i = start; i < end; i++) {
-                counts[(colors[i] >> shift) & 0x1F]++;
+                sortCounts[(colors[i] >> shift) & 0x1F]++;
             }
-            int[] offsets = new int[32];
             int sum = start;
             for (int k = 0; k < 32; k++) {
-                offsets[k] = sum;
-                sum += counts[k];
+                sortOffsets[k] = sum;
+                sum += sortCounts[k];
             }
-            int[] temp = Arrays.copyOfRange(colors, start, end);
-            for (int c : temp) {
+            int sliceLen = end - start;
+            System.arraycopy(colors, start, sortScratch, 0, sliceLen);
+            for (int i = 0; i < sliceLen; i++) {
+                int c = sortScratch[i];
                 int key = (c >> shift) & 0x1F;
-                colors[offsets[key]++] = c;
+                colors[sortOffsets[key]++] = c;
             }
         }
 
@@ -596,12 +577,12 @@ public final class VideoToGifConverter {
             final int minCodeSize = 8;
             out.write(minCodeSize);
 
-            final int clearCode = 1 << minCodeSize; // 256
-            final int endOfInfoCode = clearCode + 1; // 257
+            final int clearCode = 1 << minCodeSize;
+            final int endOfInfoCode = clearCode + 1;
 
-            int codeSize = minCodeSize + 1; // 9
+            int codeSize = minCodeSize + 1;
             int maxCodeForSize = (1 << codeSize) - 1;
-            int nextAvailableCode = clearCode + 2; // 258
+            int nextAvailableCode = clearCode + 2;
 
             Arrays.fill(lzwTable, -1);
 
@@ -609,7 +590,6 @@ public final class VideoToGifConverter {
             int bitCount = 0;
             int subBlockLen = 0;
 
-            // Emit initial Clear Code
             bitAccumulator |= (clearCode << bitCount);
             bitCount += codeSize;
             while (bitCount >= 8) {
@@ -631,7 +611,6 @@ public final class VideoToGifConverter {
                 if (existingCode != -1) {
                     prefix = existingCode;
                 } else {
-                    // Emit current prefix code
                     bitAccumulator |= (prefix << bitCount);
                     bitCount += codeSize;
                     while (bitCount >= 8) {
@@ -652,7 +631,6 @@ public final class VideoToGifConverter {
                             maxCodeForSize = (1 << codeSize) - 1;
                         }
                     } else {
-                        // Table full: emit Clear Code and reset LZW dictionary
                         bitAccumulator |= (clearCode << bitCount);
                         bitCount += codeSize;
                         while (bitCount >= 8) {
@@ -674,7 +652,6 @@ public final class VideoToGifConverter {
                 }
             }
 
-            // Emit final prefix code + End-Of-Information code
             bitAccumulator |= (prefix << bitCount);
             bitCount += codeSize;
             while (bitCount >= 8) {
@@ -705,7 +682,7 @@ public final class VideoToGifConverter {
                 out.write(subBlockLen);
                 out.write(subBlock, 0, subBlockLen);
             }
-            out.write(0); // Block terminator
+            out.write(0);
         }
 
         private void writeShortLE(int val) throws IOException {

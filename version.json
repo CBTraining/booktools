@@ -1,7 +1,7 @@
 {
-  "version": "1.018",
-  "versionName": "1.018",
-  "versionCode": 1018,
+  "version": "1.019",
+  "versionName": "1.019",
+  "versionCode": 1019,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.018: Added 'Compress image' and 'Upscale image (2x HD)' to the Files Open with / Share menu for images, using 100% offline smart compression and Contrast-Adaptive Luminance Sharpening (CAS)."
+  "changelog": "v1.019: Multi-core parallel Contrast-Adaptive Sharpening for 2x HD Upscaler, zero-allocation direct PNG streaming, cached & coalesced GIF preview scrubbing, zero-allocation Median-Cut sorting, and shared MediaToolUtils deduplication."
 }
