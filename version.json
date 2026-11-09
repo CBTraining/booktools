@@ -1,6 +1,6 @@
 {
-  "version": "1.011",
-  "versionCode": 1011,
+  "version": "1.012",
+  "versionCode": 1012,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.011: Removed experimental FancyZones Shift-drag hook and gesture injection so Shift key and window dragging remain 100% clean and responsive"
+  "notes": "BookTools v1.012: Matched exact 38dp height, 10dp corner radius, and vertical text alignment between '✓ Service Active' and 'Check Update'"
 }

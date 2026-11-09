@@ -156,11 +156,14 @@ public class MainActivity extends Activity {
         topRightButtonsRow.setOrientation(LinearLayout.HORIZONTAL);
         topRightButtonsRow.setGravity(Gravity.CENTER_VERTICAL);
 
+        int headerBtnHeight = dpToPx(38f);
+
         statusBanner = new TextView(this);
         statusBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         statusBanner.setTypeface(Typeface.DEFAULT_BOLD);
         statusBanner.setGravity(Gravity.CENTER);
-        statusBanner.setPadding(dpToPx(13f), dpToPx(8f), dpToPx(13f), dpToPx(8f));
+        statusBanner.setIncludeFontPadding(false);
+        statusBanner.setPadding(dpToPx(14f), 0, dpToPx(14f), 0);
         statusBanner.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -171,12 +174,13 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                headerBtnHeight
         );
         badgeLp.rightMargin = dpToPx(8f);
         topRightButtonsRow.addView(statusBanner, badgeLp);
 
         checkUpdateBtn = createActionButton(dark, "Check Update", false);
+        checkUpdateBtn.setPadding(dpToPx(14f), 0, dpToPx(14f), 0);
         checkUpdateBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -189,7 +193,7 @@ public class MainActivity extends Activity {
         });
         topRightButtonsRow.addView(checkUpdateBtn, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                headerBtnHeight
         ));
 
         updateCol.addView(topRightButtonsRow, new LinearLayout.LayoutParams(
@@ -582,7 +586,11 @@ public class MainActivity extends Activity {
         btn.setText(text);
         btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
-        int hPad = dpToPx(12f);
+        btn.setGravity(Gravity.CENTER);
+        btn.setIncludeFontPadding(false);
+        btn.setMinHeight(dpToPx(38f));
+        btn.setMinimumHeight(dpToPx(38f));
+        int hPad = dpToPx(14f);
         int vPad = dpToPx(8f);
         btn.setPadding(hPad, vPad, hPad, vPad);
 
@@ -657,7 +665,7 @@ public class MainActivity extends Activity {
         boolean active = isAccessibilityServiceEnabled();
         boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(18f));
+        bg.setCornerRadius(dpToPx(10f));
         if (active) {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
