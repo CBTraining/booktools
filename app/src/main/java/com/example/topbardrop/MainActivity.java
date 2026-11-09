@@ -287,6 +287,13 @@ public class MainActivity extends Activity {
                 "Opens a frosted glass history popup of your last 30 copied text snippets, #HEX colors, and PNG images stored 100% locally on your device. Click any item to re-copy it or click-and-drag it straight into any app."
         ));
 
+        shortcutsCard.addView(buildShortcutItem(
+                dark,
+                "Right-Click Video",
+                "Compress video (~50mb) · 100% Offline in Files",
+                "Right-click any video file in Files → Open with (or Share) → 'Compress video (~50mb)'. Uses your Googlebook's hardware encoder 100% offline to compress the video under ~50MB in Downloads with instant click-and-drag."
+        ));
+
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 

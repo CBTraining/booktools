@@ -1,7 +1,7 @@
 {
-  "version": "1.014",
-  "versionName": "1.014",
-  "versionCode": 1014,
+  "version": "1.015",
+  "versionName": "1.015",
+  "versionCode": 1015,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.014: Codebase optimization, deduplication of screenshot/backdrop/MediaStore/swipe-dismiss handlers, single-thread ExecutorService in AutoUpdater with throttled progress updates, and compatibility for both version and versionName keys."
+  "changelog": "v1.015: Added 'Compress video (~50mb)' to the Files right-click menu (Open with / Share) using a 100% offline hardware-accelerated H.264 video compressor that saves to Downloads with instant click-and-drag."
 }
