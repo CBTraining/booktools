@@ -1,7 +1,7 @@
 {
-  "version": "1.016",
-  "versionName": "1.016",
-  "versionCode": 1016,
+  "version": "1.017",
+  "versionName": "1.017",
+  "versionCode": 1017,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.016: Simplified video compression finish screen to just show 'File done!', and hid the 2-step setup instructions on the main app page whenever the service is already active so the Tools view takes full focus."
+  "changelog": "v1.017: Added 'Convert video to GIF (<50mb)' to the Files Open with / Share menu with an interactive Start & End trim range selector, live frame preview, and 100% offline 256-color GIF89a encoder."
 }

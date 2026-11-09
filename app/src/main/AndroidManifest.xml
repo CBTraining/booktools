@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.topbardrop"
-    android:versionCode="1016"
-    android:versionName="1.016">
+    android:versionCode="1017"
+    android:versionName="1.017">
 
     <uses-sdk
         android:minSdkVersion="29"
@@ -64,6 +64,36 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
             <intent-filter android:label="Compress video (~50mb)">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Right-Click a video in Files -> Open with / Share -> "Convert video to GIF (<50mb)" -->
+        <activity
+            android:name=".VideoToGifActivity"
+            android:label="Convert video to GIF (&lt;50mb)"
+            android:resizeableActivity="true"
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="false">
+            <layout
+                android:defaultWidth="620dp"
+                android:defaultHeight="520dp"
+                android:gravity="center"
+                android:minWidth="500dp"
+                android:minHeight="440dp" />
+            <intent-filter android:label="Convert video to GIF (&lt;50mb)">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter android:label="Convert video to GIF (&lt;50mb)">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="video/*" />

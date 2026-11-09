@@ -296,6 +296,13 @@ public class MainActivity extends Activity {
                 "Right-click any video file in Files → Open with → 'Compress video (~50mb)'. Uses your Googlebook's hardware encoder 100% offline to save a compressed MP4 (~50MB) in Downloads and shows 'File done!' when finished."
         ));
 
+        toolsCard.addView(buildShortcutItem(
+                dark,
+                "Open With in Files",
+                "Convert video to GIF (<50mb) · Start/End Trim",
+                "Right-click any video file in Files → Open with → 'Convert video to GIF (<50mb)'. Drag the Start and End handles with a live frame preview to convert any clip into a looping GIF (<50MB) in Downloads."
+        ));
+
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 
