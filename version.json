@@ -1,7 +1,7 @@
 {
-  "version": "1.017",
-  "versionName": "1.017",
-  "versionCode": 1017,
+  "version": "1.018",
+  "versionName": "1.018",
+  "versionCode": 1018,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.017: Added 'Convert video to GIF (<50mb)' to the Files Open with / Share menu with an interactive Start & End trim range selector, live frame preview, and 100% offline 256-color GIF89a encoder."
+  "changelog": "v1.018: Added 'Compress image' and 'Upscale image (2x HD)' to the Files Open with / Share menu for images, using 100% offline smart compression and Contrast-Adaptive Luminance Sharpening (CAS)."
 }

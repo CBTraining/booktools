@@ -303,6 +303,20 @@ public class MainActivity extends Activity {
                 "Right-click any video file in Files → Open with → 'Convert video to GIF (<50mb)'. Drag the Start and End handles with a live frame preview to convert any clip into a looping GIF (<50MB) in Downloads."
         ));
 
+        toolsCard.addView(buildShortcutItem(
+                dark,
+                "Open With in Files",
+                "Compress image · 100% Offline",
+                "Right-click any image file in Files → Open with → 'Compress image'. Optimizes dimensions and encoding offline (preserving transparency as WebP or saving high-efficiency JPEG) in Downloads."
+        ));
+
+        toolsCard.addView(buildShortcutItem(
+                dark,
+                "Open With in Files",
+                "Upscale image (2x HD) · Detail & Edge Enhancement",
+                "Right-click any image file in Files → Open with → 'Upscale image (2x HD)'. Runs 2x resampling with Contrast-Adaptive Luminance Sharpening (CAS) offline and saves a crisp 2x PNG in Downloads."
+        ));
+
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 
