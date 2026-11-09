@@ -1,16 +1,10 @@
 package com.example.topbardrop;
 
 import android.accessibilityservice.AccessibilityService;
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
-import android.content.ContentValues;
-import android.content.res.Configuration;
-import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -19,21 +13,15 @@ import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.HardwareBuffer;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.MediaStore;
-import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -43,7 +31,6 @@ import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
-import android.view.PointerIcon;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewTreeObserver;
@@ -59,10 +46,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -85,7 +69,7 @@ import java.util.concurrent.Executors;
  *    click-to-copy, and click-and-drag directly into any app.
  *  - Automatically adapts overlays to Device Dark Mode / Light Mode settings.
  */
-public class TopBarDropService extends AccessibilityService {
+public class TopBarDropService extends AccessibilityService implements FrostedGlassCardLayout.BackdropProvider {
 
     public static volatile TopBarDropService instance;
     public static volatile String lastActionMessage =
@@ -99,7 +83,7 @@ public class TopBarDropService extends AccessibilityService {
     private View focusProbeView;
 
     // --- Ctrl + Shift + D (Clipboard PNG Popup) state ---
-    private PopupRootView popupRoot;
+    private OverlayRootView popupRoot;
     private FrostedGlassCardLayout popupCard;
     private WindowManager.LayoutParams popupParams;
     private boolean popupShown = false;
@@ -129,7 +113,7 @@ public class TopBarDropService extends AccessibilityService {
     private long lastColorPickerTriggerMs = 0L;
 
     // --- Ctrl + Shift + G (100% Local Clipboard History) state ---
-    private HistoryRootView historyRoot;
+    private OverlayRootView historyRoot;
     private FrostedGlassCardLayout historyCard;
     private WindowManager.LayoutParams historyParams;
     private LinearLayout historyItemsContainer;
@@ -163,8 +147,17 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private boolean isDarkMode() {
-        int nightMask = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return nightMask == Configuration.UI_MODE_NIGHT_YES;
+        return MediaToolUtils.isDarkMode(this);
+    }
+
+    @Override
+    public Bitmap getCapturedScreenBitmap() {
+        return lastCapturedScreenBitmap;
+    }
+
+    @Override
+    public Bitmap getBlurredScreenBitmap() {
+        return lastBlurredScreenBitmap;
     }
 
     @Override
@@ -449,7 +442,7 @@ public class TopBarDropService extends AccessibilityService {
             lastBlurredScreenBitmap.recycle();
         }
         lastCapturedScreenBitmap = swBitmap;
-        lastBlurredScreenBitmap = createBlurredBackdropBitmap(swBitmap);
+        lastBlurredScreenBitmap = FrostedGlassCardLayout.createBlurredBackdropBitmap(swBitmap);
     }
 
     private void openPopupAndProcessClipboard() {
@@ -484,13 +477,13 @@ public class TopBarDropService extends AccessibilityService {
         int boxSurface = dark ? Color.parseColor("#55101216") : Color.parseColor("#77FFFFFF");
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
-        popupRoot = new PopupRootView(this);
+        popupRoot = new OverlayRootView(this, false);
         int outerPad = dpToPx(10f);
         popupRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
         popupRoot.setClipChildren(false);
         popupRoot.setClipToPadding(false);
 
-        popupCard = new FrostedGlassCardLayout(this, dark, dpToPx(22f));
+        popupCard = new FrostedGlassCardLayout(this, dark, dpToPx(22f), this);
         popupCard.setOrientation(LinearLayout.VERTICAL);
         int cardPad = dpToPx(16f);
         popupCard.setPadding(cardPad, dpToPx(14f), cardPad, cardPad);
@@ -651,87 +644,6 @@ public class TopBarDropService extends AccessibilityService {
         } catch (Exception e) {
             popupShown = false;
             popupDismissing = false;
-        }
-    }
-
-    /**
-     * Custom LinearLayout that renders a genuine frosted blurry glass effect strictly inside
-     * its own rounded card bounds (sampling the blurred screen backdrop at its exact screen
-     * coordinates + translucent glass sheen), leaving the rest of the screen 100% sharp and
-     * unblurred with no outline border.
-     */
-    private class FrostedGlassCardLayout extends LinearLayout {
-        private final boolean dark;
-        private final float cornerRadius;
-        private final Path clipPath = new Path();
-        private final RectF cardBounds = new RectF();
-        private final Rect screenDestRect = new Rect();
-        private final int[] locOnScreen = new int[2];
-
-        private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
-        private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        public FrostedGlassCardLayout(android.content.Context context, boolean dark, float cornerRadius) {
-            super(context);
-            this.dark = dark;
-            this.cornerRadius = cornerRadius;
-            setWillNotDraw(false);
-
-            tintPaint.setStyle(Paint.Style.FILL);
-            tintPaint.setColor(dark ? Color.parseColor("#A81A1D26") : Color.parseColor("#B8F2F6FC"));
-        }
-
-        @Override
-        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-            super.onSizeChanged(w, h, oldw, oldh);
-            sheenPaint.setShader(new LinearGradient(
-                    0, 0, w, h,
-                    dark
-                            ? new int[]{0x38FFFFFF, 0x08FFFFFF, 0x182DD4BF}
-                            : new int[]{0xAAFFFFFF, 0x22FFFFFF, 0x220D9488},
-                    new float[]{0f, 0.5f, 1f},
-                    Shader.TileMode.CLAMP
-            ));
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            int w = getWidth();
-            int h = getHeight();
-            if (w <= 0 || h <= 0) {
-                super.onDraw(canvas);
-                return;
-            }
-
-            cardBounds.set(0, 0, w, h);
-
-            canvas.save();
-            clipPath.reset();
-            clipPath.addRoundRect(cardBounds, cornerRadius, cornerRadius, Path.Direction.CW);
-            canvas.clipPath(clipPath);
-
-            // Draw the blurred desktop patch directly behind this card's exact screen position
-            if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()
-                    && lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-                getLocationOnScreen(locOnScreen);
-                int screenW = lastCapturedScreenBitmap.getWidth();
-                int screenH = lastCapturedScreenBitmap.getHeight();
-                screenDestRect.set(
-                        -locOnScreen[0],
-                        -locOnScreen[1],
-                        screenW - locOnScreen[0],
-                        screenH - locOnScreen[1]
-                );
-                canvas.drawBitmap(lastBlurredScreenBitmap, null, screenDestRect, bmpPaint);
-            }
-
-            // Frosted glass tint + diagonal glass sheen
-            canvas.drawRect(cardBounds, tintPaint);
-            canvas.drawRect(cardBounds, sheenPaint);
-            canvas.restore();
-
-            super.onDraw(canvas);
         }
     }
 
@@ -907,37 +819,20 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    private SavedPngResult writePngToDownloads(Bitmap bitmap, String baseName) throws Exception {
+    private SavedPngResult writePngToDownloads(final Bitmap bitmap, String baseName) throws Exception {
         String timestamp = new SimpleDateFormat("HHmmss", Locale.US).format(new Date());
         String cleanBase = (baseName != null && !baseName.isEmpty())
                 ? baseName + "_dl"
                 : "clipboard_" + timestamp + "_dl";
         String pngFileName = cleanBase + ".png";
 
-        Uri savedUri;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, pngFileName);
-            values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-
-            savedUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (savedUri == null) {
-                throw new IllegalStateException("Could not create PNG in Downloads");
-            }
-            try (OutputStream out = getContentResolver().openOutputStream(savedUri)) {
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-            }
-        } else {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!dir.exists()) dir.mkdirs();
-            File outFile = new File(dir, pngFileName);
-            try (OutputStream out = new FileOutputStream(outFile)) {
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-            }
-            savedUri = Uri.fromFile(outFile);
-        }
-        return new SavedPngResult(savedUri, pngFileName);
+        MediaToolUtils.StreamSaveResult res = MediaToolUtils.saveStreamToDownloads(
+                this,
+                pngFileName,
+                "image/png",
+                out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        );
+        return new SavedPngResult(res.savedUri, pngFileName);
     }
 
     private void saveBitmapAsPngAndPopulatePopup(final Bitmap bitmap, final String baseName) {
@@ -1036,13 +931,8 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private String queryDisplayName(ContentResolver resolver, Uri uri) {
-        try (Cursor c = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst()) {
-                return c.getString(0);
-            }
-        } catch (Exception ignored) {
-        }
-        return uri.getLastPathSegment();
+        MediaToolUtils.FileMeta meta = MediaToolUtils.queryFileMeta(this, uri, uri.getLastPathSegment());
+        return meta.displayName;
     }
 
     private String extractBaseName(String name) {
@@ -1051,12 +941,7 @@ public class TopBarDropService extends AccessibilityService {
         if (slash >= 0 && slash + 1 < name.length()) {
             name = name.substring(slash + 1);
         }
-        int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            name = name.substring(0, dot);
-        }
-        name = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return name.isEmpty() ? null : name;
+        return MediaToolUtils.stripExtension(name, null);
     }
 
     private void setupImmediateClickAndDragOnPreview(final View target) {
@@ -1219,17 +1104,28 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    private class PopupRootView extends FrameLayout {
-        public PopupRootView(android.content.Context context) {
+    private class OverlayRootView extends FrameLayout {
+        private final boolean isHistory;
+
+        public OverlayRootView(android.content.Context context, boolean isHistory) {
             super(context);
+            this.isHistory = isHistory;
             setFocusable(true);
             setFocusableInTouchMode(true);
+        }
+
+        private void dismissSelf() {
+            if (isHistory) {
+                dismissHistoryPopup(true);
+            } else {
+                dismissPopup(true);
+            }
         }
 
         @Override
         public boolean dispatchGenericMotionEvent(MotionEvent event) {
             if (event != null && (event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissPopup(true);
+                dismissSelf();
                 return true;
             }
             return super.dispatchGenericMotionEvent(event);
@@ -1238,7 +1134,7 @@ public class TopBarDropService extends AccessibilityService {
         @Override
         public boolean dispatchTouchEvent(MotionEvent event) {
             if (event != null && (event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissPopup(true);
+                dismissSelf();
                 return true;
             }
             return super.dispatchTouchEvent(event);
@@ -1247,9 +1143,26 @@ public class TopBarDropService extends AccessibilityService {
         @Override
         public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
-                    dismissPopup(true);
+                int code = event.getKeyCode();
+                if (code == KeyEvent.KEYCODE_ESCAPE) {
+                    dismissSelf();
                     return true;
+                }
+                if (isHistory) {
+                    int quickIndex = -1;
+                    if (code >= KeyEvent.KEYCODE_1 && code <= KeyEvent.KEYCODE_9) {
+                        quickIndex = code - KeyEvent.KEYCODE_1;
+                    } else if (code >= KeyEvent.KEYCODE_NUMPAD_1 && code <= KeyEvent.KEYCODE_NUMPAD_9) {
+                        quickIndex = code - KeyEvent.KEYCODE_NUMPAD_1;
+                    }
+                    if (quickIndex >= 0) {
+                        List<ClipboardHistoryManager.HistoryItem> items =
+                                ClipboardHistoryManager.getItems(TopBarDropService.this);
+                        if (quickIndex < items.size()) {
+                            copyHistoryItemAndDismiss(items.get(quickIndex));
+                            return true;
+                        }
+                    }
                 }
             }
             return super.dispatchKeyEvent(event);
@@ -1386,66 +1299,41 @@ public class TopBarDropService extends AccessibilityService {
         return bmp;
     }
 
-    private static Bitmap createBlurredBackdropBitmap(Bitmap src) {
-        if (src == null || src.isRecycled()) return null;
-        try {
-            int smallW = Math.max(32, src.getWidth() / 8);
-            int smallH = Math.max(32, src.getHeight() / 8);
-            Bitmap small = Bitmap.createScaledBitmap(src, smallW, smallH, true);
-            int[] pixels = new int[smallW * smallH];
-            int[] temp = new int[smallW * smallH];
-            small.getPixels(pixels, 0, smallW, 0, 0, smallW, smallH);
-
-            int radius = 3;
-            for (int pass = 0; pass < 2; pass++) {
-                for (int y = 0; y < smallH; y++) {
-                    int rowOffset = y * smallW;
-                    for (int x = 0; x < smallW; x++) {
-                        int rSum = 0, gSum = 0, bSum = 0, count = 0;
-                        for (int k = -radius; k <= radius; k++) {
-                            int nx = clamp(x + k, 0, smallW - 1);
-                            int c = pixels[rowOffset + nx];
-                            rSum += (c >> 16) & 0xFF;
-                            gSum += (c >> 8) & 0xFF;
-                            bSum += c & 0xFF;
-                            count++;
-                        }
-                        temp[rowOffset + x] = 0xFF000000
-                                | ((rSum / count) << 16)
-                                | ((gSum / count) << 8)
-                                | (bSum / count);
-                    }
-                }
-                for (int x = 0; x < smallW; x++) {
-                    for (int y = 0; y < smallH; y++) {
-                        int rSum = 0, gSum = 0, bSum = 0, count = 0;
-                        for (int k = -radius; k <= radius; k++) {
-                            int ny = clamp(y + k, 0, smallH - 1);
-                            int c = temp[ny * smallW + x];
-                            rSum += (c >> 16) & 0xFF;
-                            gSum += (c >> 8) & 0xFF;
-                            bSum += c & 0xFF;
-                            count++;
-                        }
-                        pixels[y * smallW + x] = 0xFF000000
-                                | ((rSum / count) << 16)
-                                | ((gSum / count) << 8)
-                                | (bSum / count);
-                    }
-                }
-            }
-            small.setPixels(pixels, 0, smallW, 0, 0, smallW, smallH);
-            return small;
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
     private void showColorPickerOverlay(Bitmap bitmap, String bannerHint) {
         dismissColorPicker(false);
 
         colorPickerRoot = new ColorPickerRootView(this);
-        colorPickerCanvas = new ColorPickerCanvasView(this, bitmap, lastBlurredScreenBitmap, bannerHint, isDarkMode());
+        colorPickerCanvas = new ColorPickerCanvasView(
+                this,
+                bitmap,
+                lastBlurredScreenBitmap,
+                bannerHint,
+                isDarkMode(),
+                new ColorPickerCanvasView.Listener() {
+                    @Override
+                    public void onColorPicked(int pickedColor, String hex) {
+                        ClipboardHistoryManager.markInternalClipboardWrite();
+                        ClipboardManager cm = getSystemService(ClipboardManager.class);
+                        if (cm == null) {
+                            cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        }
+                        if (cm != null) {
+                            cm.setPrimaryClip(ClipData.newPlainText("Color HEX", hex));
+                        }
+                        ClipboardHistoryManager.addTextOrColorItem(TopBarDropService.this, hex);
+
+                        lastActionMessage = "Copied color " + hex + " to clipboard";
+                        notifyActivityStatus();
+                        showCopiedColorBadge(pickedColor, hex);
+                        dismissColorPicker(true);
+                    }
+
+                    @Override
+                    public void onCancelRequested() {
+                        dismissColorPicker(true);
+                    }
+                }
+        );
         colorPickerRoot.addView(colorPickerCanvas, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -1579,388 +1467,6 @@ public class TopBarDropService extends AccessibilityService {
         }
     }
 
-    private class ColorPickerCanvasView extends View {
-        private final Bitmap screenBmp;
-        private final Bitmap blurredBmp;
-        private final String bannerHint;
-        private float pointerX = -1f;
-        private float pointerY = -1f;
-        private float animProgress = 1f;
-        private ValueAnimator currentAnimator;
-
-        private final int gridRadius = 5; // 11 x 11 pixel grid
-        private final int gridCount = gridRadius * 2 + 1;
-
-        private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
-        private final Paint pixelPaint = new Paint();
-        private final Paint gridLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glassTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint subTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint bannerTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint crosshairDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint crosshairLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint centerOuterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint centerInnerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF tempRect = new RectF();
-        private final Rect fullDestRect = new Rect();
-        private final Path clipPath = new Path();
-
-        public ColorPickerCanvasView(android.content.Context context, Bitmap bitmap, Bitmap blurred, String hint, boolean dark) {
-            super(context);
-            this.screenBmp = bitmap;
-            this.blurredBmp = blurred != null ? blurred : createBlurredBackdropBitmap(bitmap);
-            this.bannerHint = hint;
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                setPointerIcon(PointerIcon.getSystemIcon(context, PointerIcon.TYPE_CROSSHAIR));
-            }
-
-            gridLinePaint.setStyle(Paint.Style.STROKE);
-            gridLinePaint.setStrokeWidth(1f);
-            gridLinePaint.setColor(0x28FFFFFF);
-
-            glassTintPaint.setStyle(Paint.Style.FILL);
-            glassTintPaint.setColor(dark ? Color.parseColor("#A6181A22") : Color.parseColor("#B8F4F8FC"));
-
-            textPaint.setColor(dark ? Color.WHITE : Color.parseColor("#181A1F"));
-            textPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
-            textPaint.setTextSize(TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_SP, 14f, getResources().getDisplayMetrics()));
-
-            subTextPaint.setColor(dark ? Color.parseColor("#D2D6DC") : Color.parseColor("#4A5058"));
-            subTextPaint.setTypeface(Typeface.DEFAULT);
-            subTextPaint.setTextSize(TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_SP, 11f, getResources().getDisplayMetrics()));
-
-            bannerTextPaint.setColor(dark ? Color.WHITE : Color.parseColor("#181A1F"));
-            bannerTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
-            bannerTextPaint.setTextAlign(Paint.Align.CENTER);
-            bannerTextPaint.setTextSize(TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_SP, 12.5f, getResources().getDisplayMetrics()));
-
-            crosshairDarkPaint.setStyle(Paint.Style.STROKE);
-            crosshairDarkPaint.setStrokeWidth(dpToPx(3f));
-            crosshairDarkPaint.setColor(0xDD000000);
-            crosshairDarkPaint.setStrokeCap(Paint.Cap.ROUND);
-
-            crosshairLightPaint.setStyle(Paint.Style.STROKE);
-            crosshairLightPaint.setStrokeWidth(dpToPx(1.6f));
-            crosshairLightPaint.setColor(0xFFFFFFFF);
-            crosshairLightPaint.setStrokeCap(Paint.Cap.ROUND);
-
-            centerOuterPaint.setStyle(Paint.Style.STROKE);
-            centerOuterPaint.setStrokeWidth(dpToPx(2f));
-            centerOuterPaint.setColor(Color.WHITE);
-
-            centerInnerPaint.setStyle(Paint.Style.STROKE);
-            centerInnerPaint.setStrokeWidth(dpToPx(1f));
-            centerInnerPaint.setColor(Color.BLACK);
-        }
-
-        public void cancelRunningAnimator() {
-            if (currentAnimator != null) {
-                currentAnimator.removeAllUpdateListeners();
-                currentAnimator.removeAllListeners();
-                currentAnimator.cancel();
-                currentAnimator = null;
-            }
-        }
-
-        @Override
-        protected void onDetachedFromWindow() {
-            cancelRunningAnimator();
-            super.onDetachedFromWindow();
-        }
-
-        public void startAppearAnimation() {
-            if (currentAnimator != null) {
-                currentAnimator.cancel();
-            }
-            animProgress = 0f;
-            currentAnimator = ValueAnimator.ofFloat(0f, 1f);
-            currentAnimator.setDuration(190);
-            currentAnimator.setInterpolator(new OvershootInterpolator(1.08f));
-            currentAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                @Override
-                public void onAnimationUpdate(ValueAnimator animation) {
-                    animProgress = (Float) animation.getAnimatedValue();
-                    invalidate();
-                }
-            });
-            currentAnimator.start();
-        }
-
-        public void startDisappearAnimation(final Runnable onEnd) {
-            if (currentAnimator != null) {
-                currentAnimator.cancel();
-            }
-            currentAnimator = ValueAnimator.ofFloat(animProgress, 0f);
-            currentAnimator.setDuration(150);
-            currentAnimator.setInterpolator(new AccelerateInterpolator(1.2f));
-            currentAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                @Override
-                public void onAnimationUpdate(ValueAnimator animation) {
-                    animProgress = (Float) animation.getAnimatedValue();
-                    invalidate();
-                }
-            });
-            currentAnimator.addListener(new AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(Animator animation) {
-                    if (onEnd != null) {
-                        onEnd.run();
-                    }
-                }
-            });
-            currentAnimator.start();
-        }
-
-        public void updatePointerFromMotionEvent(MotionEvent event) {
-            pointerX = event.getX();
-            pointerY = event.getY();
-            invalidate();
-        }
-
-        public void nudgePointerByPixels(int dx, int dy) {
-            int maxW = Math.max(1, getWidth() - 1);
-            int maxH = Math.max(1, getHeight() - 1);
-            pointerX = Math.max(0f, Math.min(maxW, pointerX + dx));
-            pointerY = Math.max(0f, Math.min(maxH, pointerY + dy));
-            invalidate();
-        }
-
-        @Override
-        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-            super.onSizeChanged(w, h, oldw, oldh);
-            if (pointerX < 0f || pointerY < 0f) {
-                pointerX = w / 2f;
-                pointerY = h / 2f;
-            }
-        }
-
-        private void drawFrostedGlassCard(Canvas canvas, RectF bounds, float radius, int screenW, int screenH) {
-            canvas.save();
-            clipPath.reset();
-            clipPath.addRoundRect(bounds, radius, radius, Path.Direction.CW);
-            canvas.clipPath(clipPath);
-            if (blurredBmp != null && !blurredBmp.isRecycled()) {
-                fullDestRect.set(0, 0, screenW, screenH);
-                canvas.drawBitmap(blurredBmp, null, fullDestRect, bmpPaint);
-            }
-            canvas.drawRect(bounds, glassTintPaint);
-            canvas.restore();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            int viewW = getWidth();
-            int viewH = getHeight();
-            if (viewW <= 0 || viewH <= 0 || screenBmp == null || screenBmp.isRecycled()) {
-                return;
-            }
-
-            int alphaInt = clamp(Math.round(Math.min(1f, Math.max(0f, animProgress)) * 255f), 0, 255);
-            bmpPaint.setAlpha(alphaInt);
-            // Draw the unblurred screen snapshot so the rest of the screen stays 100% sharp!
-            canvas.drawBitmap(screenBmp, 0f, 0f, bmpPaint);
-
-            if (pointerX < 0f || pointerY < 0f) {
-                pointerX = viewW / 2f;
-                pointerY = viewH / 2f;
-            }
-
-            int bmpX = clamp(Math.round(pointerX), 0, screenBmp.getWidth() - 1);
-            int bmpY = clamp(Math.round(pointerY), 0, screenBmp.getHeight() - 1);
-            int centerColor = screenBmp.getPixel(bmpX, bmpY);
-            String hex = String.format(Locale.US, "#%06X", (0xFFFFFF & centerColor));
-            int r = Color.red(centerColor);
-            int g = Color.green(centerColor);
-            int b = Color.blue(centerColor);
-
-            float scale = 0.72f + 0.28f * animProgress;
-
-            // 1. Draw Frosted Glass Top Instruction Pill (blurs ONLY inside the pill!)
-            String topMsg = (bannerHint != null && !bannerHint.isEmpty())
-                    ? bannerHint
-                    : "Color Picker — Move cursor & click to copy " + hex + " · Right-click or Esc to cancel";
-            float pillWidth = bannerTextPaint.measureText(topMsg) + dpToPx(34f);
-            float pillHeight = dpToPx(36f);
-            float pillLeft = (viewW - pillWidth) / 2f;
-            float pillTop = dpToPx(50f);
-            RectF pillBounds = new RectF(pillLeft, pillTop, pillLeft + pillWidth, pillTop + pillHeight);
-            canvas.save();
-            canvas.scale(scale, scale, viewW / 2f, pillTop + pillHeight / 2f);
-            drawFrostedGlassCard(canvas, pillBounds, dpToPx(18f), screenBmp.getWidth(), screenBmp.getHeight());
-            canvas.drawText(topMsg, viewW / 2f, pillTop + dpToPx(23f), bannerTextPaint);
-            canvas.restore();
-
-            // 2. Draw high-contrast precision Crosshair at (pointerX, pointerY)
-            float chGap = dpToPx(5f);
-            float chLen = dpToPx(18f);
-
-            canvas.drawLine(pointerX - chLen, pointerY, pointerX - chGap, pointerY, crosshairDarkPaint);
-            canvas.drawLine(pointerX + chGap, pointerY, pointerX + chLen, pointerY, crosshairDarkPaint);
-            canvas.drawLine(pointerX, pointerY - chLen, pointerX, pointerY - chGap, crosshairDarkPaint);
-            canvas.drawLine(pointerX, pointerY + chGap, pointerX, pointerY + chLen, crosshairDarkPaint);
-            canvas.drawCircle(pointerX, pointerY, chGap, crosshairDarkPaint);
-
-            canvas.drawLine(pointerX - chLen, pointerY, pointerX - chGap, pointerY, crosshairLightPaint);
-            canvas.drawLine(pointerX + chGap, pointerY, pointerX + chLen, pointerY, crosshairLightPaint);
-            canvas.drawLine(pointerX, pointerY - chLen, pointerX, pointerY - chGap, crosshairLightPaint);
-            canvas.drawLine(pointerX, pointerY + chGap, pointerX, pointerY + chLen, crosshairLightPaint);
-            canvas.drawCircle(pointerX, pointerY, chGap, crosshairLightPaint);
-
-            // 3. Compute Frosted Glass Zoom Loupe Card bounds (auto-flips below crosshair if near top edge!)
-            float cellPx = dpToPx(11f);
-            float gridSize = cellPx * gridCount;
-            float pad = dpToPx(10f);
-            float infoHeight = dpToPx(46f);
-            float cardW = gridSize + pad * 2f;
-            float cardH = gridSize + pad * 2f + infoHeight;
-            float cursorOffset = dpToPx(26f);
-            float screenEdgeMargin = dpToPx(14f);
-
-            float cardLeft = pointerX - cardW / 2f;
-            float cardTop = pointerY - cursorOffset - cardH;
-
-            if (cardTop < screenEdgeMargin) {
-                cardTop = pointerY + cursorOffset;
-            }
-            if (cardTop + cardH > viewH - screenEdgeMargin) {
-                cardTop = viewH - screenEdgeMargin - cardH;
-            }
-            if (cardLeft < screenEdgeMargin) {
-                cardLeft = screenEdgeMargin;
-            } else if (cardLeft + cardW > viewW - screenEdgeMargin) {
-                cardLeft = viewW - screenEdgeMargin - cardW;
-            }
-
-            canvas.save();
-            canvas.scale(scale, scale, pointerX, pointerY);
-
-            RectF cardBounds = new RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
-            drawFrostedGlassCard(canvas, cardBounds, dpToPx(18f), screenBmp.getWidth(), screenBmp.getHeight());
-
-            // Draw Magnified 11x11 Pixel Grid inside rounded clip
-            float gridLeft = cardLeft + pad;
-            float gridTop = cardTop + pad;
-            tempRect.set(gridLeft, gridTop, gridLeft + gridSize, gridTop + gridSize);
-
-            canvas.save();
-            clipPath.reset();
-            clipPath.addRoundRect(tempRect, dpToPx(10f), dpToPx(10f), Path.Direction.CW);
-            canvas.clipPath(clipPath);
-
-            for (int dy = -gridRadius; dy <= gridRadius; dy++) {
-                int sy = clamp(bmpY + dy, 0, screenBmp.getHeight() - 1);
-                float py = gridTop + (dy + gridRadius) * cellPx;
-                for (int dx = -gridRadius; dx <= gridRadius; dx++) {
-                    int sx = clamp(bmpX + dx, 0, screenBmp.getWidth() - 1);
-                    float px = gridLeft + (dx + gridRadius) * cellPx;
-                    pixelPaint.setColor(screenBmp.getPixel(sx, sy));
-                    canvas.drawRect(px, py, px + cellPx + 0.5f, py + cellPx + 0.5f, pixelPaint);
-                    canvas.drawRect(px, py, px + cellPx, py + cellPx, gridLinePaint);
-                }
-            }
-            canvas.restore();
-
-            // Highlight center pixel (exact target pixel)
-            float centerPxLeft = gridLeft + gridRadius * cellPx;
-            float centerPxTop = gridTop + gridRadius * cellPx;
-            tempRect.set(centerPxLeft, centerPxTop, centerPxLeft + cellPx, centerPxTop + cellPx);
-            canvas.drawRect(tempRect, centerOuterPaint);
-            tempRect.inset(dpToPx(1.5f), dpToPx(1.5f));
-            canvas.drawRect(tempRect, centerInnerPaint);
-
-            // Draw Color Swatch + #RRGGBB HEX + RGB(r,g,b) below the magnified grid
-            float infoTop = gridTop + gridSize + dpToPx(8f);
-            float swatchSize = dpToPx(24f);
-            float swatchLeft = gridLeft + dpToPx(2f);
-            float swatchTop = infoTop + dpToPx(4f);
-
-            tempRect.set(swatchLeft, swatchTop, swatchLeft + swatchSize, swatchTop + swatchSize);
-            pixelPaint.setColor(centerColor);
-            pixelPaint.setAntiAlias(true);
-            canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), pixelPaint);
-
-            float textLeft = swatchLeft + swatchSize + dpToPx(8f);
-            canvas.drawText(hex, textLeft, swatchTop + dpToPx(13f), textPaint);
-            canvas.drawText("RGB(" + r + "," + g + "," + b + ")", textLeft, swatchTop + dpToPx(26f), subTextPaint);
-
-            canvas.restore();
-        }
-
-        @Override
-        public boolean onHoverEvent(MotionEvent event) {
-            if (event != null) {
-                updatePointerFromMotionEvent(event);
-                return true;
-            }
-            return super.onHoverEvent(event);
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            if (event == null) return false;
-
-            if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissColorPicker(true);
-                return true;
-            }
-
-            boolean isMouse = (event.getSource() & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE;
-
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    updatePointerFromMotionEvent(event);
-                    if (isMouse) {
-                        pickCurrentColorAndClose();
-                    }
-                    return true;
-
-                case MotionEvent.ACTION_MOVE:
-                    updatePointerFromMotionEvent(event);
-                    return true;
-
-                case MotionEvent.ACTION_UP:
-                    updatePointerFromMotionEvent(event);
-                    if (!isMouse) {
-                        pickCurrentColorAndClose();
-                    }
-                    return true;
-            }
-            return super.onTouchEvent(event);
-        }
-
-        public void pickCurrentColorAndClose() {
-            if (screenBmp == null || screenBmp.isRecycled()) {
-                dismissColorPicker(true);
-                return;
-            }
-            int bmpX = clamp(Math.round(pointerX), 0, screenBmp.getWidth() - 1);
-            int bmpY = clamp(Math.round(pointerY), 0, screenBmp.getHeight() - 1);
-            int pickedColor = screenBmp.getPixel(bmpX, bmpY);
-            String hex = String.format(Locale.US, "#%06X", (0xFFFFFF & pickedColor));
-
-            ClipboardHistoryManager.markInternalClipboardWrite();
-            ClipboardManager cm = getSystemService(ClipboardManager.class);
-            if (cm == null) {
-                cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            }
-            if (cm != null) {
-                cm.setPrimaryClip(ClipData.newPlainText("Color HEX", hex));
-            }
-            ClipboardHistoryManager.addTextOrColorItem(TopBarDropService.this, hex);
-
-            lastActionMessage = "Copied color " + hex + " to clipboard";
-            notifyActivityStatus();
-            showCopiedColorBadge(pickedColor, hex);
-            dismissColorPicker(true);
-        }
-    }
-
     private void showCopiedColorBadge(int color, String hex) {
         showFloatingStatusPill(color, true, "Copied " + hex + " to clipboard");
     }
@@ -1971,7 +1477,7 @@ public class TopBarDropService extends AccessibilityService {
         int outerPad = dpToPx(8f);
         badgeRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
 
-        final FrostedGlassCardLayout pill = new FrostedGlassCardLayout(this, dark, dpToPx(24f));
+        final FrostedGlassCardLayout pill = new FrostedGlassCardLayout(this, dark, dpToPx(24f), this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
         pill.setPadding(dpToPx(14f), dpToPx(10f), dpToPx(16f), dpToPx(10f));
@@ -2300,13 +1806,13 @@ public class TopBarDropService extends AccessibilityService {
         int textMuted = dark ? Color.parseColor("#A8B0BA") : Color.parseColor("#68707A");
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
-        historyRoot = new HistoryRootView(this);
+        historyRoot = new OverlayRootView(this, true);
         int outerPad = dpToPx(10f);
         historyRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
         historyRoot.setClipChildren(false);
         historyRoot.setClipToPadding(false);
 
-        historyCard = new FrostedGlassCardLayout(this, dark, dpToPx(22f));
+        historyCard = new FrostedGlassCardLayout(this, dark, dpToPx(22f), this);
         historyCard.setOrientation(LinearLayout.VERTICAL);
         int cardPad = dpToPx(16f);
         historyCard.setPadding(cardPad, dpToPx(14f), cardPad, cardPad);
@@ -2874,62 +2380,6 @@ public class TopBarDropService extends AccessibilityService {
         releaseScreenBitmapsIfIdle();
     }
 
-    private class HistoryRootView extends FrameLayout {
-        public HistoryRootView(android.content.Context context) {
-            super(context);
-            setFocusable(true);
-            setFocusableInTouchMode(true);
-        }
-
-        @Override
-        public boolean dispatchGenericMotionEvent(MotionEvent event) {
-            if (event != null && (event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissHistoryPopup(true);
-                return true;
-            }
-            return super.dispatchGenericMotionEvent(event);
-        }
-
-        @Override
-        public boolean dispatchTouchEvent(MotionEvent event) {
-            if (event != null && (event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
-                dismissHistoryPopup(true);
-                return true;
-            }
-            return super.dispatchTouchEvent(event);
-        }
-
-        @Override
-        public boolean dispatchKeyEvent(KeyEvent event) {
-            if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-                int code = event.getKeyCode();
-                if (code == KeyEvent.KEYCODE_ESCAPE) {
-                    dismissHistoryPopup(true);
-                    return true;
-                }
-                int quickIndex = -1;
-                if (code >= KeyEvent.KEYCODE_1 && code <= KeyEvent.KEYCODE_9) {
-                    quickIndex = code - KeyEvent.KEYCODE_1;
-                } else if (code >= KeyEvent.KEYCODE_NUMPAD_1 && code <= KeyEvent.KEYCODE_NUMPAD_9) {
-                    quickIndex = code - KeyEvent.KEYCODE_NUMPAD_1;
-                }
-                if (quickIndex >= 0) {
-                    List<ClipboardHistoryManager.HistoryItem> items =
-                            ClipboardHistoryManager.getItems(TopBarDropService.this);
-                    if (quickIndex < items.size()) {
-                        copyHistoryItemAndDismiss(items.get(quickIndex));
-                        return true;
-                    }
-                }
-            }
-            return super.dispatchKeyEvent(event);
-        }
-    }
-
-    private static int clamp(int val, int min, int max) {
-        return Math.max(min, Math.min(max, val));
-    }
-
     private void notifyActivityStatus() {
         MainActivity act = MainActivity.current;
         if (act != null) {
@@ -2945,10 +2395,7 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private int dpToPx(float dp) {
-        return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                dp,
-                getResources().getDisplayMetrics()
-        ));
+        return MediaToolUtils.dpToPx(this, dp);
     }
 }
+

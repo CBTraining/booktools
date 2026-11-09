@@ -1,7 +1,7 @@
 {
-  "version": "1.019",
-  "versionName": "1.019",
-  "versionCode": 1019,
+  "version": "1.020",
+  "versionName": "1.020",
+  "versionCode": 1020,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.019: Multi-core parallel Contrast-Adaptive Sharpening for 2x HD Upscaler, zero-allocation direct PNG streaming, cached & coalesced GIF preview scrubbing, zero-allocation Median-Cut sorting, and shared MediaToolUtils deduplication."
+  "changelog": "v1.020: Codebase housekeeping, modularization, and deduplication (BaseProgressToolActivity, TranscodeGlSurface, Gif89aWriter, FrostedGlassCardLayout, ColorPickerCanvasView, and unified OverlayRootView)."
 }
