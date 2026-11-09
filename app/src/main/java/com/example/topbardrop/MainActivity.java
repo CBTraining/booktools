@@ -317,6 +317,13 @@ public class MainActivity extends Activity {
                 "Right-click any image file in Files → Open with → 'Upscale image (2x HD)'. Runs 2x resampling with Contrast-Adaptive Luminance Sharpening (CAS) offline and saves a crisp 2x PNG in Downloads."
         ));
 
+        toolsCard.addView(buildShortcutItem(
+                dark,
+                "Open With in Files",
+                "Extract PDF images (ZIP) · 100% Offline",
+                "Right-click any PDF file in Files → Open with → 'Extract PDF images (ZIP)'. Extracts embedded images and high-resolution page PNGs into a single .zip archive in Downloads."
+        ));
+
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 
