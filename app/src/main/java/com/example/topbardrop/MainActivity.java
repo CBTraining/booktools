@@ -45,6 +45,7 @@ public class MainActivity extends Activity {
     private TextView updateStatusView;
     private Button checkUpdateBtn;
     private View setupCard;
+    private View shortcutsCard;
     private TextView lastActionView;
 
     @Override
@@ -256,42 +257,43 @@ public class MainActivity extends Activity {
                 }
         ));
 
-        // --- Card 2: Keyboard Shortcuts Reference ---
-        LinearLayout shortcutsCard = buildCardContainer(dark);
+        // --- Card 2: Tools Reference ---
+        LinearLayout toolsCard = buildCardContainer(dark);
+        shortcutsCard = toolsCard;
 
         TextView shortcutsHeader = new TextView(this);
-        shortcutsHeader.setText("What You Can Do");
+        shortcutsHeader.setText("Tools");
         shortcutsHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         shortcutsHeader.setTypeface(Typeface.DEFAULT_BOLD);
         shortcutsHeader.setTextColor(textPrimary);
-        shortcutsCard.addView(shortcutsHeader);
+        toolsCard.addView(shortcutsHeader);
 
-        shortcutsCard.addView(buildShortcutItem(
+        toolsCard.addView(buildShortcutItem(
                 dark,
                 "Ctrl + Shift + D",
                 "Clipboard Image → PNG Download & Drag Popup",
                 "Converts any copied image (WebP, JPEG, PNG, etc.) into a lossless .png file in Downloads and opens a frosted glass popup card. Click & drag the PNG directly into any app, or swipe / right-click to dismiss."
         ));
 
-        shortcutsCard.addView(buildShortcutItem(
+        toolsCard.addView(buildShortcutItem(
                 dark,
                 "Ctrl + Shift + C",
                 "Screen Color Picker (#HEX to Clipboard)",
                 "Opens a precision crosshair with a frosted glass magnified pixel loupe (auto-flips above or below your cursor near screen edges). Click any pixel to copy its #RRGGBB HEX code to your clipboard."
         ));
 
-        shortcutsCard.addView(buildShortcutItem(
+        toolsCard.addView(buildShortcutItem(
                 dark,
                 "Ctrl + Shift + G",
                 "Local Clipboard History (Up to 30 Items · 100% On-Device)",
                 "Opens a frosted glass history popup of your last 30 copied text snippets, #HEX colors, and PNG images stored 100% locally on your device. Click any item to re-copy it or click-and-drag it straight into any app."
         ));
 
-        shortcutsCard.addView(buildShortcutItem(
+        toolsCard.addView(buildShortcutItem(
                 dark,
-                "Right-Click Video",
-                "Compress video (~50mb) · 100% Offline in Files",
-                "Right-click any video file in Files → Open with (or Share) → 'Compress video (~50mb)'. Uses your Googlebook's hardware encoder 100% offline to compress the video under ~50MB in Downloads with instant click-and-drag."
+                "Open With in Files",
+                "Compress video (~50mb) · 100% Offline",
+                "Right-click any video file in Files → Open with → 'Compress video (~50mb)'. Uses your Googlebook's hardware encoder 100% offline to save a compressed MP4 (~50MB) in Downloads and shows 'File done!' when finished."
         ));
 
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
@@ -679,6 +681,20 @@ public class MainActivity extends Activity {
             statusBanner.setText("⚠ Setup Needed");
         }
         statusBanner.setBackground(bg);
+
+        if (setupCard != null) {
+            setupCard.setVisibility(active ? View.GONE : View.VISIBLE);
+        }
+        if (shortcutsCard != null && shortcutsCard.getLayoutParams() instanceof LinearLayout.LayoutParams) {
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) shortcutsCard.getLayoutParams();
+            boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
+            int desiredLeftMargin = (!active && wideLayout) ? dpToPx(8f) : 0;
+            if (lp.leftMargin != desiredLeftMargin) {
+                lp.leftMargin = desiredLeftMargin;
+                shortcutsCard.setLayoutParams(lp);
+            }
+        }
+
         int localCount = ClipboardHistoryManager.getItemCount(this);
         lastActionView.setText("Status: " + TopBarDropService.lastActionMessage
                 + " · Local History: " + localCount + "/" + ClipboardHistoryManager.MAX_HISTORY_ITEMS + " items");

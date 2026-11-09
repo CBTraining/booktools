@@ -1,9 +1,6 @@
 package com.example.topbardrop;
 
 import android.app.Activity;
-import android.content.ClipData;
-import android.content.ClipDescription;
-import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -17,9 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.TypedValue;
-import android.view.DragEvent;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.widget.Button;
@@ -28,29 +23,22 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Floating desktop dialog activity launched from the Files app right-click menu:
- * Right-Click video -> Open with (or Share) -> "Compress Video (~50MB)".
+ * Right-Click video -> Open with (or Share) -> "Compress video (~50mb)".
  * Runs 100% offline hardware-accelerated video compression and saves the output MP4 to Downloads.
  */
 public class VideoCompressActivity extends Activity {
 
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
-    private boolean compressionFinished = false;
-    private VideoCompressor.CompressResult latestResult;
 
     private TextView fileTitleView;
     private TextView metaSubtitleView;
     private ProgressBar progressBar;
     private TextView statusTextView;
-    private LinearLayout dragDropBox;
-    private TextView dragTitleView;
-    private TextView dragSubView;
-    private Button primaryActionBtn;
     private Button cancelOrCloseBtn;
 
     @Override
@@ -128,7 +116,7 @@ public class VideoCompressActivity extends Activity {
         titleCol.setOrientation(LinearLayout.VERTICAL);
 
         TextView headerTitle = new TextView(this);
-        headerTitle.setText("Compress Video (~50MB)");
+        headerTitle.setText("Compress video (~50mb)");
         headerTitle.setTextColor(textPrimary);
         headerTitle.setTypeface(Typeface.DEFAULT_BOLD);
         headerTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
@@ -203,48 +191,11 @@ public class VideoCompressActivity extends Activity {
         statusTextView = new TextView(this);
         statusTextView.setText("Starting offline hardware encoder...");
         statusTextView.setTextColor(textSecondary);
-        statusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        statusTextView.setPadding(0, dpToPx(8f), 0, 0);
+        statusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        statusTextView.setPadding(0, dpToPx(10f), 0, 0);
         card.addView(statusTextView);
 
-        // 4. Drag & Drop Box (revealed when compression completes)
-        dragDropBox = new LinearLayout(this);
-        dragDropBox.setOrientation(LinearLayout.VERTICAL);
-        dragDropBox.setGravity(Gravity.CENTER);
-        int dragPad = dpToPx(14f);
-        dragDropBox.setPadding(dragPad, dragPad, dragPad, dragPad);
-        GradientDrawable dragBg = new GradientDrawable();
-        dragBg.setCornerRadius(dpToPx(14f));
-        dragBg.setColor(dark ? Color.parseColor("#1E292B") : Color.parseColor("#E6F7F5"));
-        dragDropBox.setBackground(dragBg);
-        dragDropBox.setVisibility(View.GONE);
-
-        dragTitleView = new TextView(this);
-        dragTitleView.setText("⬇ Click & Drag Compressed MP4 into any app");
-        dragTitleView.setTextColor(accentTeal);
-        dragTitleView.setTypeface(Typeface.DEFAULT_BOLD);
-        dragTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
-        dragTitleView.setGravity(Gravity.CENTER);
-        dragDropBox.addView(dragTitleView);
-
-        dragSubView = new TextView(this);
-        dragSubView.setText("Saved in Downloads");
-        dragSubView.setTextColor(textSecondary);
-        dragSubView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        dragSubView.setGravity(Gravity.CENTER);
-        dragSubView.setPadding(0, dpToPx(4f), 0, 0);
-        dragDropBox.addView(dragSubView);
-
-        setupDragOutGesture(dragDropBox);
-
-        LinearLayout.LayoutParams dragBoxLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        dragBoxLp.topMargin = dpToPx(12f);
-        card.addView(dragDropBox, dragBoxLp);
-
-        // 5. Bottom Action Buttons Row
+        // 4. Bottom Action Button Row
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
@@ -253,20 +204,6 @@ public class VideoCompressActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT
         );
         btnRowLp.topMargin = dpToPx(16f);
-
-        primaryActionBtn = createFlatButton(dark, "Copy MP4 to Clipboard", true);
-        primaryActionBtn.setVisibility(View.GONE);
-        primaryActionBtn.setOnClickListener(v -> {
-            if (latestResult != null && latestResult.savedUri != null) {
-                copyMp4UriToClipboard(latestResult.savedUri, latestResult.savedFileName);
-            }
-        });
-        LinearLayout.LayoutParams primaryLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
-        );
-        primaryLp.rightMargin = dpToPx(8f);
-        btnRow.addView(primaryActionBtn, primaryLp);
 
         cancelOrCloseBtn = createFlatButton(dark, "Cancel", false);
         cancelOrCloseBtn.setOnClickListener(v -> {
@@ -286,13 +223,6 @@ public class VideoCompressActivity extends Activity {
                 Gravity.CENTER
         );
         outerRoot.addView(card, cardLp);
-
-        outerRoot.setOnDragListener((v, event) -> {
-            if (event.getAction() == DragEvent.ACTION_DRAG_ENDED && event.getResult()) {
-                finish();
-            }
-            return true;
-        });
 
         setContentView(outerRoot);
     }
@@ -326,7 +256,7 @@ public class VideoCompressActivity extends Activity {
         btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
         btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dpToPx(16f), 0, dpToPx(16f), 0);
+        btn.setPadding(dpToPx(18f), 0, dpToPx(18f), 0);
         btn.setMinHeight(0);
         btn.setMinimumHeight(0);
         btn.setMinWidth(0);
@@ -334,6 +264,11 @@ public class VideoCompressActivity extends Activity {
         btn.setStateListAnimator(null);
         btn.setElevation(0f);
 
+        updateButtonAppearance(btn, dark, primary);
+        return btn;
+    }
+
+    private void updateButtonAppearance(Button btn, boolean dark, boolean primary) {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(10f));
         if (primary) {
@@ -344,22 +279,19 @@ public class VideoCompressActivity extends Activity {
             btn.setTextColor(dark ? Color.parseColor("#E5E7EB") : Color.parseColor("#1F2937"));
         }
         btn.setBackground(bg);
-        return btn;
     }
 
     private void handleIncomingIntent(Intent intent) {
         Uri videoUri = extractVideoUri(intent);
         if (videoUri == null) {
             fileTitleView.setText("No video file received");
-            metaSubtitleView.setText("Right-click a video file in Files and choose 'Compress Video (~50MB)'.");
+            metaSubtitleView.setText("Right-click a video file in Files → Open with → 'Compress video (~50mb)'.");
             statusTextView.setText("Ready.");
             cancelOrCloseBtn.setText("Close");
             return;
         }
 
         cancelFlag.set(false);
-        compressionFinished = false;
-        latestResult = null;
 
         VideoCompressor.compressVideoAsync(this, videoUri, cancelFlag, new VideoCompressor.CompressCallback() {
             @Override
@@ -380,25 +312,24 @@ public class VideoCompressActivity extends Activity {
 
             @Override
             public void onSuccess(VideoCompressor.CompressResult result) {
-                compressionFinished = true;
-                latestResult = result;
+                boolean dark = isDarkMode();
                 progressBar.setProgress(100);
 
                 String origStr = result.originalBytes > 0
                         ? (VideoCompressor.formatBytes(result.originalBytes) + " → ")
                         : "";
                 String finalStr = VideoCompressor.formatBytes(result.compressedBytes);
-                statusTextView.setText("✓ Done! " + origStr + finalStr + " (Saved in Downloads)");
 
-                dragSubView.setText("Downloads/" + result.savedFileName + " (" + finalStr + ")");
-                dragDropBox.setVisibility(View.VISIBLE);
-                primaryActionBtn.setVisibility(View.VISIBLE);
+                statusTextView.setTypeface(Typeface.DEFAULT_BOLD);
+                statusTextView.setTextColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
+                statusTextView.setText("✓ File done! Saved to Downloads/" + result.savedFileName
+                        + " (" + origStr + finalStr + ")");
+
                 cancelOrCloseBtn.setText("Done");
+                updateButtonAppearance(cancelOrCloseBtn, dark, true);
 
-                if (TopBarDropService.instance != null) {
-                    TopBarDropService.instance.lastActionMessage =
-                            "Compressed video: " + result.savedFileName + " (" + finalStr + ")";
-                }
+                TopBarDropService.lastActionMessage =
+                        "File done: Downloads/" + result.savedFileName + " (" + finalStr + ")";
             }
 
             @Override
@@ -437,85 +368,6 @@ public class VideoCompressActivity extends Activity {
             }
         }
         return intent.getData();
-    }
-
-    private void setupDragOutGesture(View view) {
-        view.setOnTouchListener(new View.OnTouchListener() {
-            private float downX;
-            private float downY;
-            private boolean dragStarted;
-            private final int slop = dpToPx(5f);
-
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                if (!compressionFinished || latestResult == null || latestResult.savedUri == null) {
-                    return false;
-                }
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downX = event.getX();
-                        downY = event.getY();
-                        dragStarted = false;
-                        v.setAlpha(0.85f);
-                        return true;
-
-                    case MotionEvent.ACTION_MOVE:
-                        if (!dragStarted) {
-                            float dx = event.getX() - downX;
-                            float dy = event.getY() - downY;
-                            if (Math.hypot(dx, dy) > slop) {
-                                dragStarted = true;
-                                v.setAlpha(1.0f);
-                                startMp4DragOut(v, latestResult.savedUri, latestResult.savedFileName);
-                            }
-                        }
-                        return true;
-
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        v.setAlpha(1.0f);
-                        if (!dragStarted && event.getActionMasked() == MotionEvent.ACTION_UP) {
-                            copyMp4UriToClipboard(latestResult.savedUri, latestResult.savedFileName);
-                        }
-                        dragStarted = false;
-                        return true;
-                }
-                return false;
-            }
-        });
-    }
-
-    private void startMp4DragOut(View sourceView, Uri mp4Uri, String fileName) {
-        try {
-            ClipDescription desc = new ClipDescription(
-                    fileName,
-                    new String[]{"video/mp4", "application/octet-stream"}
-            );
-            ClipData clipData = new ClipData(desc, new ClipData.Item(mp4Uri));
-            View.DragShadowBuilder shadow = new View.DragShadowBuilder(sourceView);
-            int flags = View.DRAG_FLAG_GLOBAL | View.DRAG_FLAG_GLOBAL_URI_READ;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                sourceView.startDragAndDrop(clipData, shadow, null, flags);
-            } else {
-                //noinspection deprecation
-                sourceView.startDrag(clipData, shadow, null, flags);
-            }
-        } catch (Exception e) {
-            Toast.makeText(this, "Drag failed: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void copyMp4UriToClipboard(Uri mp4Uri, String fileName) {
-        try {
-            ClipboardManager cm = getSystemService(ClipboardManager.class);
-            if (cm != null) {
-                ClipData clip = ClipData.newUri(getContentResolver(), fileName, mp4Uri);
-                cm.setPrimaryClip(clip);
-                Toast.makeText(this, "Copied " + fileName + " to clipboard!", Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception e) {
-            Toast.makeText(this, "Saved in Downloads/" + fileName, Toast.LENGTH_SHORT).show();
-        }
     }
 
     private int dpToPx(float dp) {
