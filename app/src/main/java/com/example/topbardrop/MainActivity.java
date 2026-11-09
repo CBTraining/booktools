@@ -167,7 +167,9 @@ public class MainActivity extends Activity {
         statusBanner.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!isAccessibilityServiceEnabled()) {
+                if (!isAccessibilityServiceEnabled()
+                        || (TopBarDropService.instance != null
+                        && !TopBarDropService.instance.hasWindowAndGestureCapabilities())) {
                     openAccessibilitySettings();
                 }
             }
@@ -750,14 +752,21 @@ public class MainActivity extends Activity {
     public void refreshUiState() {
         if (statusBanner == null || lastActionView == null) return;
         boolean active = isAccessibilityServiceEnabled();
+        boolean hasSnapCaps = TopBarDropService.instance == null
+                || TopBarDropService.instance.hasWindowAndGestureCapabilities();
         boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(18f));
-        if (active) {
+        if (active && hasSnapCaps) {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
             statusBanner.setText("✓ Service Active");
+        } else if (active) {
+            bg.setColor(dark ? Color.parseColor("#332811") : Color.parseColor("#FEF7E0"));
+            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#664D14") : Color.parseColor("#FDE293"));
+            statusBanner.setTextColor(dark ? Color.parseColor("#FDD663") : Color.parseColor("#B06000"));
+            statusBanner.setText("↻ Toggle Service Once");
         } else {
             bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));

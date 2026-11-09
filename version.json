@@ -1,6 +1,6 @@
 {
-  "version": "1.009",
-  "versionCode": 1009,
+  "version": "1.010",
+  "versionCode": 1010,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.009: Added PowerToys FancyZones Window Snapper (Hold Shift while dragging any window or press Ctrl+Shift+Z, with Quarters, Half & Half, and Triple Column segment options in Settings)"
+  "notes": "BookTools v1.010: Fixed FancyZones Shift-drag trigger, added canRetrieveWindowContent capability for live segment highlighting, and added Left-Click release auto-snap + 3-phase hold-drag-hold window resizing"
 }

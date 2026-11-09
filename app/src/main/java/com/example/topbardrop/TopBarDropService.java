@@ -247,6 +247,24 @@ public class TopBarDropService extends AccessibilityService {
         }
 
         if (action == KeyEvent.ACTION_DOWN) {
+            if (shiftKeyHeld
+                    && keyCode != KeyEvent.KEYCODE_SHIFT_LEFT
+                    && keyCode != KeyEvent.KEYCODE_SHIFT_RIGHT
+                    && keyCode != KeyEvent.KEYCODE_TAB
+                    && !(keyCode >= KeyEvent.KEYCODE_1 && keyCode <= KeyEvent.KEYCODE_4)
+                    && !(keyCode >= KeyEvent.KEYCODE_NUMPAD_1 && keyCode <= KeyEvent.KEYCODE_NUMPAD_4)) {
+                otherKeyPressedDuringShift = true;
+                handler.removeCallbacks(shiftShowZonesRunnable);
+                if (snapZonesShown && !windowMovedWhileZonesShown && !event.isCtrlPressed()) {
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            dismissSnapZonesOverlay(false);
+                        }
+                    });
+                }
+            }
+
             // If SnapZones overlay is visible, handle Tab (cycle layouts), 1-4 (pick zone), or Esc
             if (snapZonesShown && !snapZonesDismissing) {
                 if (keyCode == KeyEvent.KEYCODE_TAB) {
@@ -3268,6 +3286,27 @@ public class TopBarDropService extends AccessibilityService {
     // =========================================================================
 
     private long shiftPressTimeMs = 0L;
+    private boolean otherKeyPressedDuringShift = false;
+    private boolean windowMovedWhileZonesShown = false;
+    private final Rect dragStartWindowRect = new Rect();
+
+    private final Runnable shiftShowZonesRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (shiftKeyHeld && !otherKeyPressedDuringShift && !snapZonesShown) {
+                showSnapZonesOverlay(false);
+            }
+        }
+    };
+
+    private final Runnable makeZonesTouchableRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (snapZonesShown && !snapZonesDismissing && !snapZonesInteractive) {
+                setSnapZonesTouchable(true);
+            }
+        }
+    };
 
     private final Runnable shiftDragPollRunnable = new Runnable() {
         @Override
@@ -3277,35 +3316,85 @@ public class TopBarDropService extends AccessibilityService {
             }
             inspectWindowsForDrag(true);
             if (shiftKeyHeld || snapZonesShown) {
-                handler.postDelayed(this, 24L);
+                handler.postDelayed(this, 20L);
             }
         }
     };
+
+    public boolean hasWindowAndGestureCapabilities() {
+        try {
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info == null) return false;
+            int caps = info.getCapabilities();
+            boolean canWin = (caps & AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT) != 0;
+            boolean canGest = (caps & AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) != 0;
+            return canWin && canGest;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void ensureWindowRetrievalFlagSet() {
+        try {
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info != null) {
+                int desiredFlags = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+                        | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+                if ((info.flags & desiredFlags) != desiredFlags) {
+                    info.flags |= desiredFlags;
+                    info.eventTypes |= AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                            | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+                    setServiceInfo(info);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
 
     private void onShiftPressedForSnapZones() {
         if (colorPickerShown || historyShown || popupShown) {
             return;
         }
+        ensureWindowRetrievalFlagSet();
         shiftPressTimeMs = System.currentTimeMillis();
-        inspectWindowsForDrag(true);
+        otherKeyPressedDuringShift = false;
+
+        // Capture the active window's current bounds right as Shift is pressed
+        Rect rect = new Rect();
+        CharSequence[] titleOut = new CharSequence[1];
+        int winId = findTargetApplicationWindow(-1, rect, titleOut);
+        if (winId != -1 && !rect.isEmpty()) {
+            draggedWindowId = winId;
+            draggedWindowRect.set(rect);
+            dragStartWindowRect.set(rect);
+            trackedWindowId = winId;
+            trackedWindowRect.set(rect);
+            draggedWindowTitle = titleOut[0] != null ? titleOut[0] : "Window";
+        }
+
         long now = System.currentTimeMillis();
-        // If a window was dragged within the last 950ms before Shift was pressed, show zones immediately
-        if (!snapZonesShown && (now - lastWindowDragTimeMs <= 950L) && draggedWindowId != -1) {
+        // Show immediately if a window was just moving, or after 110ms of holding Shift
+        if (!snapZonesShown && (now - lastWindowDragTimeMs <= 1200L)) {
             showSnapZonesOverlay(false);
+        } else {
+            handler.removeCallbacks(shiftShowZonesRunnable);
+            handler.postDelayed(shiftShowZonesRunnable, 110L);
         }
         handler.removeCallbacks(shiftDragPollRunnable);
-        handler.postDelayed(shiftDragPollRunnable, 24L);
+        handler.postDelayed(shiftDragPollRunnable, 20L);
     }
 
     private void onShiftReleasedForSnapZones() {
+        handler.removeCallbacks(shiftShowZonesRunnable);
         if (!snapZonesShown || snapZonesDismissing) {
             return;
         }
         long heldDuration = System.currentTimeMillis() - shiftPressTimeMs;
-        // If user held Shift while dragging into a zone (>= 260ms) and released Shift, snap to hovered zone!
-        // If user tapped Shift quickly (< 260ms), switch overlay to interactive click/right-click mode so
-        // they can click or right-click any zone (or tap Shift again) to snap.
-        if (heldDuration >= 260L && hoveredSnapZoneIndex >= 0 && hoveredSnapZoneIndex < currentSnapZones.size()) {
+        // Re-check window bounds one more time in case Left-Click was just released right before Shift
+        checkIfWindowMovedFromStart();
+        if ((windowMovedWhileZonesShown || heldDuration >= 240L)
+                && hoveredSnapZoneIndex >= 0
+                && hoveredSnapZoneIndex < currentSnapZones.size()) {
             commitHoveredSnapZoneAndDismiss();
         } else {
             setSnapZonesTouchable(true);
@@ -3319,17 +3408,35 @@ public class TopBarDropService extends AccessibilityService {
         dismissPopup(false);
         dismissColorPicker(false);
         dismissHistoryPopup(false);
+        ensureWindowRetrievalFlagSet();
 
-        // Capture the topmost non-BookTools application window (or BookTools if it's the only one)
         Rect rect = new Rect();
         CharSequence[] titleOut = new CharSequence[1];
         int winId = findTargetApplicationWindow(-1, rect, titleOut);
         if (winId != -1) {
             draggedWindowId = winId;
             draggedWindowRect.set(rect);
+            dragStartWindowRect.set(rect);
             draggedWindowTitle = titleOut[0] != null ? titleOut[0] : "Active Window";
         }
         showSnapZonesOverlay(true);
+    }
+
+    private boolean checkIfWindowMovedFromStart() {
+        Rect rect = new Rect();
+        int preferredId = (draggedWindowId != -1) ? draggedWindowId : -1;
+        int winId = findTargetApplicationWindow(preferredId, rect, null);
+        if (winId != -1 && !rect.isEmpty() && !dragStartWindowRect.isEmpty()) {
+            int dx = Math.abs(rect.left - dragStartWindowRect.left);
+            int dy = Math.abs(rect.top - dragStartWindowRect.top);
+            if (dx >= 4 || dy >= 4) {
+                draggedWindowId = winId;
+                draggedWindowRect.set(rect);
+                windowMovedWhileZonesShown = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     private void inspectWindowsForDrag(boolean fromPoll) {
@@ -3351,7 +3458,7 @@ public class TopBarDropService extends AccessibilityService {
             int dw = Math.abs(rect.width() - trackedWindowRect.width());
             int dh = Math.abs(rect.height() - trackedWindowRect.height());
 
-            if ((dx >= 2 || dy >= 2) && dw <= dpToPx(24f) && dh <= dpToPx(24f)) {
+            if ((dx >= 2 || dy >= 2) && dw <= dpToPx(36f) && dh <= dpToPx(36f)) {
                 trackedWindowRect.set(rect);
                 draggedWindowId = winId;
                 draggedWindowRect.set(rect);
@@ -3363,14 +3470,17 @@ public class TopBarDropService extends AccessibilityService {
                     showSnapZonesOverlay(false);
                 }
                 if (snapZonesShown && !snapZonesDismissing) {
-                    if (snapZonesInteractive) {
-                        setSnapZonesTouchable(false);
-                    }
+                    windowMovedWhileZonesShown = true;
                     updateHoveredZoneFromWindowRect(rect);
                 }
-            } else if (snapZonesShown && !snapZonesDismissing && !snapZonesInteractive) {
-                // If window stopped moving for >= 180ms while zones are shown, enable direct mouse hover & Right-Click / Left-Click
-                if (now - lastSnapZonesMoveMs >= 180L) {
+            } else if (snapZonesShown && !snapZonesDismissing) {
+                // If the window was dragged while zones were shown and has now settled stationary
+                // for >= 210ms (meaning the user released Left-Click!), automatically snap & resize!
+                if (windowMovedWhileZonesShown && (now - lastSnapZonesMoveMs >= 210L)) {
+                    commitHoveredSnapZoneAndDismiss();
+                    return;
+                }
+                if (!snapZonesInteractive && (now - lastSnapZonesMoveMs >= 150L)) {
                     setSnapZonesTouchable(true);
                 }
             }
@@ -3380,6 +3490,9 @@ public class TopBarDropService extends AccessibilityService {
             if (draggedWindowId == -1) {
                 draggedWindowId = winId;
                 draggedWindowRect.set(rect);
+                if (dragStartWindowRect.isEmpty()) {
+                    dragStartWindowRect.set(rect);
+                }
                 draggedWindowTitle = titleOut[0] != null ? titleOut[0] : "Window";
             }
         }
@@ -3388,20 +3501,28 @@ public class TopBarDropService extends AccessibilityService {
     private void updateHoveredZoneFromWindowRect(Rect rect) {
         if (currentSnapZones == null || currentSnapZones.isEmpty()) return;
         Rect workArea = getDesktopWorkArea();
-        float probeX = rect.exactCenterX();
-        if (rect.left <= workArea.left + dpToPx(95f)) {
-            probeX = rect.left + dpToPx(55f);
-        } else if (rect.right >= workArea.right - dpToPx(95f)) {
-            probeX = rect.right - dpToPx(55f);
+
+        int dragDx = !dragStartWindowRect.isEmpty() ? (rect.left - dragStartWindowRect.left) : 0;
+        int dragDy = !dragStartWindowRect.isEmpty() ? (rect.top - dragStartWindowRect.top) : 0;
+
+        float probeX = rect.exactCenterX() + dragDx * 0.45f;
+        if (rect.left <= workArea.left + dpToPx(120f)) {
+            probeX = workArea.left + dpToPx(40f);
+        } else if (rect.right >= workArea.right - dpToPx(120f)) {
+            probeX = workArea.right - dpToPx(40f);
         }
-        float probeY = clamp(
-                Math.round(rect.top + dpToPx(26f)),
-                workArea.top + dpToPx(16f),
-                workArea.bottom - dpToPx(16f)
-        );
-        if (rect.bottom >= workArea.bottom - dpToPx(85f) && rect.top > workArea.centerY() - dpToPx(130f)) {
-            probeY = Math.max(probeY, workArea.centerY() + dpToPx(45f));
+        probeX = clamp(Math.round(probeX), workArea.left + 8, workArea.right - 8);
+
+        float probeY = rect.top + dpToPx(32f) + Math.max(0, dragDy * 0.65f);
+        if (rect.top + dpToPx(48f) >= workArea.centerY()
+                || (dragDy > dpToPx(55f) && rect.exactCenterY() + dragDy * 0.5f >= workArea.centerY())
+                || (rect.bottom >= workArea.bottom - dpToPx(48f) && dragDy > dpToPx(24f))) {
+            probeY = Math.max(probeY, workArea.centerY() + dpToPx(60f));
+        } else if (rect.top <= workArea.top + dpToPx(90f) || dragDy < -dpToPx(35f)) {
+            probeY = Math.min(probeY, workArea.centerY() - dpToPx(60f));
         }
+        probeY = clamp(Math.round(probeY), workArea.top + 8, workArea.bottom - 8);
+
         int newIdx = SnapZonesManager.findZoneIndexAt(currentSnapZones, probeX, probeY);
         if (newIdx != hoveredSnapZoneIndex) {
             hoveredSnapZoneIndex = newIdx;
@@ -3465,9 +3586,21 @@ public class TopBarDropService extends AccessibilityService {
         removeSnapZonesImmediate();
         rebuildCurrentSnapZones();
 
-        if (!draggedWindowRect.isEmpty()) {
-            updateHoveredZoneFromWindowRect(draggedWindowRect);
-        } else if (!currentSnapZones.isEmpty()) {
+        windowMovedWhileZonesShown = false;
+        Rect cur = new Rect();
+        CharSequence[] titleOut = new CharSequence[1];
+        int winId = findTargetApplicationWindow(draggedWindowId, cur, titleOut);
+        if (winId != -1 && !cur.isEmpty()) {
+            draggedWindowId = winId;
+            draggedWindowRect.set(cur);
+            if (dragStartWindowRect.isEmpty()) {
+                dragStartWindowRect.set(cur);
+            }
+            if (titleOut[0] != null) {
+                draggedWindowTitle = titleOut[0];
+            }
+            updateHoveredZoneFromWindowRect(cur);
+        } else if (!currentSnapZones.isEmpty() && hoveredSnapZoneIndex < 0) {
             hoveredSnapZoneIndex = 0;
         }
 
@@ -3485,8 +3618,6 @@ public class TopBarDropService extends AccessibilityService {
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
         if (!startInteractive) {
-            // While user is actively dragging a window with mouse button held down, keep
-            // FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE so native window dragging is 100% uninterrupted
             flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         }
@@ -3505,14 +3636,18 @@ public class TopBarDropService extends AccessibilityService {
             snapZonesShown = true;
             snapZonesDismissing = false;
             snapZonesRoot.setAlpha(0f);
-            snapZonesRoot.animate().alpha(1f).setDuration(140L).start();
+            snapZonesRoot.animate().alpha(1f).setDuration(120L).start();
 
             if (startInteractive) {
                 snapZonesRoot.requestFocus();
+            } else {
+                // Enable hover/drop detection 150ms after appearing (while active pointer drag stays with SystemUI)
+                handler.removeCallbacks(makeZonesTouchableRunnable);
+                handler.postDelayed(makeZonesTouchableRunnable, 150L);
             }
 
             handler.removeCallbacks(shiftDragPollRunnable);
-            handler.postDelayed(shiftDragPollRunnable, 24L);
+            handler.postDelayed(shiftDragPollRunnable, 20L);
         } catch (Exception e) {
             snapZonesShown = false;
             snapZonesRoot = null;
@@ -3559,7 +3694,7 @@ public class TopBarDropService extends AccessibilityService {
         final View rootToRemove = snapZonesRoot;
         snapZonesRoot.animate()
                 .alpha(0f)
-                .setDuration(120L)
+                .setDuration(110L)
                 .withEndAction(new Runnable() {
                     @Override
                     public void run() {
@@ -3573,6 +3708,8 @@ public class TopBarDropService extends AccessibilityService {
 
     private void removeSnapZonesImmediate() {
         handler.removeCallbacks(shiftDragPollRunnable);
+        handler.removeCallbacks(shiftShowZonesRunnable);
+        handler.removeCallbacks(makeZonesTouchableRunnable);
         if (snapZonesRoot != null) {
             try {
                 windowManager.removeViewImmediate(snapZonesRoot);
@@ -3585,6 +3722,8 @@ public class TopBarDropService extends AccessibilityService {
         snapZonesShown = false;
         snapZonesDismissing = false;
         snapZonesInteractive = false;
+        windowMovedWhileZonesShown = false;
+        dragStartWindowRect.setEmpty();
     }
 
     private void commitHoveredSnapZoneAndDismiss() {
@@ -3599,13 +3738,13 @@ public class TopBarDropService extends AccessibilityService {
         lastActionMessage = "Snapping window to " + chosenZone.title + "...";
         notifyActivityStatus();
 
-        // Wait 110ms for overlay removal and mouse button release before dispatching window snap gestures
+        // Wait 95ms for overlay removal and mouse button release before dispatching window snap gestures
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 snapWindowToZone(targetWinId, chosenZone);
             }
-        }, 110L);
+        }, 95L);
     }
 
     private int findTargetApplicationWindow(int preferredWindowId, Rect outBounds, CharSequence[] outTitle) {
@@ -3614,6 +3753,11 @@ public class TopBarDropService extends AccessibilityService {
             if (windows == null || windows.isEmpty()) {
                 return -1;
             }
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            int screenW = dm.widthPixels;
+            int screenH = dm.heightPixels;
+            Rect tmp = new Rect();
+
             AccessibilityWindowInfo chosen = null;
             if (preferredWindowId != -1) {
                 for (AccessibilityWindowInfo w : windows) {
@@ -3624,11 +3768,26 @@ public class TopBarDropService extends AccessibilityService {
                 }
             }
             if (chosen == null) {
-                // Prefer focused/active application window
+                // Prefer focused/active freeform application window
                 for (AccessibilityWindowInfo w : windows) {
                     if (w != null && w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && (w.isFocused() || w.isActive())) {
-                        chosen = w;
-                        break;
+                        w.getBoundsInScreen(tmp);
+                        if (!tmp.isEmpty()) {
+                            chosen = w;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (chosen == null) {
+                // Next prefer any non-fullscreen (freeform) application window
+                for (AccessibilityWindowInfo w : windows) {
+                    if (w != null && w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        w.getBoundsInScreen(tmp);
+                        if (!tmp.isEmpty() && (tmp.width() < screenW - dpToPx(8f) || tmp.height() < screenH - dpToPx(8f))) {
+                            chosen = w;
+                            break;
+                        }
                     }
                 }
             }
@@ -3680,14 +3839,22 @@ public class TopBarDropService extends AccessibilityService {
     /**
      * Moves and resizes the target freeform application window to fit chosenZone.bounds
      * using AccessibilityAction.ACTION_MOVE_WINDOW and self-verifying multi-stage gesture strokes
-     * on the window's title bar and freeform resize corners.
+     * on the window's title bar and freeform resize corners (outer + inner fallback).
      */
     private void snapWindowToZone(final int preferredWinId, final SnapZonesManager.SnapZone zone) {
+        if (!hasWindowAndGestureCapabilities()) {
+            String msg = "Toggle 'BookTools Shortcuts' OFF & ON once in Accessibility Settings to grant Window Snap permission!";
+            lastActionMessage = msg;
+            notifyActivityStatus();
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            return;
+        }
+
         final Rect target = new Rect(zone.bounds);
         final Rect curRect = new Rect();
         final int winId = findTargetApplicationWindow(preferredWinId, curRect, null);
         if (winId == -1 || curRect.isEmpty()) {
-            Toast.makeText(this, "No active freeform window found to snap", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "No active freeform window found — click a window first", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -3695,7 +3862,6 @@ public class TopBarDropService extends AccessibilityService {
         final int screenW = dm.widthPixels;
         final int screenH = dm.heightPixels;
 
-        // Try direct Accessibility ACTION_MOVE_WINDOW first if moving won't push bottom-right off-screen
         if (target.left + curRect.width() <= screenW - dpToPx(6f)
                 && target.top + curRect.height() <= screenH - dpToPx(6f)) {
             tryAccessibilityMoveWindow(winId, target.left, target.top);
@@ -3725,12 +3891,12 @@ public class TopBarDropService extends AccessibilityService {
         // would push its bottom-right corner off-screen, shrink its bottom-right corner first!
         if (target.left + cur.width() > screenW - dpToPx(8f)
                 || target.top + cur.height() > screenH - dpToPx(8f)) {
-            int startX = clamp(cur.right - 2, 4, screenW - 4);
-            int startY = clamp(cur.bottom - 2, 4, screenH - 4);
-            int endX = clamp(cur.left + target.width() - 2, cur.left + dpToPx(220f), screenW - 4);
-            int endY = clamp(cur.top + target.height() - 2, cur.top + dpToPx(180f), screenH - 4);
+            int startX = clamp(cur.right + dpToPx(1f), 4, screenW - 3);
+            int startY = clamp(cur.bottom + dpToPx(1f), 4, screenH - 3);
+            int endX = clamp(cur.left + target.width(), cur.left + dpToPx(220f), screenW - 3);
+            int endY = clamp(cur.top + target.height(), cur.top + dpToPx(180f), screenH - 3);
 
-            dispatchLinearDragGesture(startX, startY, endX, endY, 175L, new Runnable() {
+            dispatchHoldDragHoldGesture(startX, startY, endX, endY, 190L, new Runnable() {
                 @Override
                 public void run() {
                     runSnapStage2MoveToTargetTopLeft(winId, target, screenW, screenH, zoneTitle);
@@ -3760,15 +3926,15 @@ public class TopBarDropService extends AccessibilityService {
             return;
         }
 
-        // Grab the window's title bar at 36% width (avoiding left app icon menu and right window buttons)
-        int grabOffsetX = clamp((int) (cur.width() * 0.36f), dpToPx(85f), dpToPx(220f));
+        // Grab the window's title bar at 40% width (avoiding left app icon menu and right window buttons)
+        int grabOffsetX = clamp((int) (cur.width() * 0.40f), dpToPx(95f), dpToPx(240f));
         int grabOffsetY = dpToPx(18f);
         int startX = clamp(cur.left + grabOffsetX, 8, screenW - 8);
         int startY = clamp(cur.top + grabOffsetY, 8, screenH - 8);
         int endX = clamp(startX + dx, 8, screenW - 8);
         int endY = clamp(startY + dy, 8, screenH - 8);
 
-        dispatchLinearDragGesture(startX, startY, endX, endY, 180L, new Runnable() {
+        dispatchHoldDragHoldGesture(startX, startY, endX, endY, 200L, new Runnable() {
             @Override
             public void run() {
                 runSnapStage3CornerTopLeftVerify(winId, target, screenW, screenH, zoneTitle);
@@ -3788,20 +3954,20 @@ public class TopBarDropService extends AccessibilityService {
             return;
         }
 
-        // If title-bar drag didn't align top-left (e.g. custom caption bar), adjust via Top-Left resize corner
+        // If title-bar drag didn't align top-left, adjust via Top-Left resize corner
         if (Math.abs(cur.left - target.left) > dpToPx(16f) || Math.abs(cur.top - target.top) > dpToPx(16f)) {
-            int startX = clamp(cur.left + 2, 2, screenW - 4);
-            int startY = clamp(cur.top + 2, 2, screenH - 4);
-            int endX = clamp(target.left + 2, 2, screenW - 4);
-            int endY = clamp(target.top + 2, 2, screenH - 4);
-            dispatchLinearDragGesture(startX, startY, endX, endY, 170L, new Runnable() {
+            int startX = clamp(cur.left, 2, screenW - 4);
+            int startY = clamp(cur.top, 2, screenH - 4);
+            int endX = clamp(target.left, 2, screenW - 4);
+            int endY = clamp(target.top, 2, screenH - 4);
+            dispatchHoldDragHoldGesture(startX, startY, endX, endY, 185L, new Runnable() {
                 @Override
                 public void run() {
-                    runSnapStage4ResizeBottomRight(winId, target, screenW, screenH, zoneTitle);
+                    runSnapStage4ResizeBottomRight(winId, target, screenW, screenH, zoneTitle, false);
                 }
             });
         } else {
-            runSnapStage4ResizeBottomRight(winId, target, screenW, screenH, zoneTitle);
+            runSnapStage4ResizeBottomRight(winId, target, screenW, screenH, zoneTitle, false);
         }
     }
 
@@ -3810,27 +3976,41 @@ public class TopBarDropService extends AccessibilityService {
             final Rect target,
             final int screenW,
             final int screenH,
-            final String zoneTitle
+            final String zoneTitle,
+            final boolean isInnerFallback
     ) {
         Rect cur = new Rect();
         if (findTargetApplicationWindow(winId, cur, null) == -1 || cur.isEmpty()) {
             return;
         }
 
-        if (Math.abs(cur.right - target.right) <= dpToPx(8f)
-                && Math.abs(cur.bottom - target.bottom) <= dpToPx(8f)) {
+        if (Math.abs(cur.right - target.right) <= dpToPx(10f)
+                && Math.abs(cur.bottom - target.bottom) <= dpToPx(10f)) {
             finishWindowSnapStatus(zoneTitle, target);
             return;
         }
 
-        int startX = clamp(cur.right - 2, 4, screenW - 2);
-        int startY = clamp(cur.bottom - 2, 4, screenH - 2);
-        int endX = clamp(target.right - 2, 4, screenW - 2);
-        int endY = clamp(target.bottom - 2, 4, screenH - 2);
+        // First try outer resize corner (cur.right + 1dp, cur.bottom + 1dp) where DragResizeWindowGeometry
+        // places the freeform resize handle outside the client area; if unchanged, fallback to inner corner (-3dp).
+        int offset = isInnerFallback ? -dpToPx(3f) : dpToPx(1f);
+        int startX = clamp(cur.right + offset, 4, screenW - 2);
+        int startY = clamp(cur.bottom + offset, 4, screenH - 2);
+        int endX = clamp(target.right + offset, 4, screenW - 2);
+        int endY = clamp(target.bottom + offset, 4, screenH - 2);
 
-        dispatchLinearDragGesture(startX, startY, endX, endY, 185L, new Runnable() {
+        dispatchHoldDragHoldGesture(startX, startY, endX, endY, 210L, new Runnable() {
             @Override
             public void run() {
+                if (!isInnerFallback) {
+                    Rect check = new Rect();
+                    if (findTargetApplicationWindow(winId, check, null) != -1 && !check.isEmpty()) {
+                        if (Math.abs(check.right - target.right) > dpToPx(14f)
+                                || Math.abs(check.bottom - target.bottom) > dpToPx(14f)) {
+                            runSnapStage4ResizeBottomRight(winId, target, screenW, screenH, zoneTitle, true);
+                            return;
+                        }
+                    }
+                }
                 finishWindowSnapStatus(zoneTitle, target);
             }
         });
@@ -3844,15 +4024,18 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     /**
-     * Dispatches a smooth linear drag gesture from (startX, startY) to (endX, endY) followed by a
-     * 55ms zero-velocity hold at (endX, endY) so Android's VelocityTracker never flings the window.
+     * Dispatches a 3-phase gesture:
+     *  1. 45ms stationary hold at (startX, startY) so SystemUI's DragResizeInputListener / caption
+     *     bar locks onto the pointer down target,
+     *  2. Smooth linear drag from (startX, startY) to (endX, endY),
+     *  3. 60ms stationary hold at (endX, endY) so VelocityTracker velocity is 0 px/s before ACTION_UP.
      */
-    private void dispatchLinearDragGesture(
+    private void dispatchHoldDragHoldGesture(
             final int startX,
             final int startY,
             final int endX,
             final int endY,
-            final long durationMs,
+            final long dragDurationMs,
             final Runnable onComplete
     ) {
         if (Math.abs(endX - startX) < 3 && Math.abs(endY - startY) < 3) {
@@ -3862,33 +4045,61 @@ public class TopBarDropService extends AccessibilityService {
             return;
         }
         try {
-            Path movePath = new Path();
-            movePath.moveTo(startX, startY);
-            movePath.lineTo(endX, endY);
+            Path holdStartPath = new Path();
+            holdStartPath.moveTo(startX, startY);
+            holdStartPath.lineTo(startX, startY);
 
-            final GestureDescription.StrokeDescription moveStroke =
-                    new GestureDescription.StrokeDescription(movePath, 0L, durationMs, true);
-            GestureDescription moveGesture = new GestureDescription.Builder()
-                    .addStroke(moveStroke)
+            final GestureDescription.StrokeDescription holdStartStroke =
+                    new GestureDescription.StrokeDescription(holdStartPath, 0L, 45L, true);
+            GestureDescription startGesture = new GestureDescription.Builder()
+                    .addStroke(holdStartStroke)
                     .build();
 
-            boolean dispatched = dispatchGesture(moveGesture, new GestureResultCallback() {
+            boolean dispatched = dispatchGesture(startGesture, new GestureResultCallback() {
                 @Override
                 public void onCompleted(GestureDescription gestureDescription) {
                     try {
-                        Path holdPath = new Path();
-                        holdPath.moveTo(endX, endY);
-                        holdPath.lineTo(endX, endY);
-                        GestureDescription.StrokeDescription holdStroke =
-                                moveStroke.continueStroke(holdPath, 0L, 55L, false);
-                        GestureDescription holdGesture = new GestureDescription.Builder()
-                                .addStroke(holdStroke)
+                        Path movePath = new Path();
+                        movePath.moveTo(startX, startY);
+                        movePath.lineTo(endX, endY);
+                        final GestureDescription.StrokeDescription moveStroke =
+                                holdStartStroke.continueStroke(movePath, 0L, dragDurationMs, true);
+                        GestureDescription moveGesture = new GestureDescription.Builder()
+                                .addStroke(moveStroke)
                                 .build();
-                        dispatchGesture(holdGesture, new GestureResultCallback() {
+
+                        dispatchGesture(moveGesture, new GestureResultCallback() {
                             @Override
                             public void onCompleted(GestureDescription gestureDescription) {
-                                if (onComplete != null) {
-                                    handler.postDelayed(onComplete, 45L);
+                                try {
+                                    Path holdEndPath = new Path();
+                                    holdEndPath.moveTo(endX, endY);
+                                    holdEndPath.lineTo(endX, endY);
+                                    GestureDescription.StrokeDescription holdEndStroke =
+                                            moveStroke.continueStroke(holdEndPath, 0L, 60L, false);
+                                    GestureDescription endGesture = new GestureDescription.Builder()
+                                            .addStroke(holdEndStroke)
+                                            .build();
+
+                                    dispatchGesture(endGesture, new GestureResultCallback() {
+                                        @Override
+                                        public void onCompleted(GestureDescription gestureDescription) {
+                                            if (onComplete != null) {
+                                                handler.postDelayed(onComplete, 45L);
+                                            }
+                                        }
+
+                                        @Override
+                                        public void onCancelled(GestureDescription gestureDescription) {
+                                            if (onComplete != null) {
+                                                handler.postDelayed(onComplete, 45L);
+                                            }
+                                        }
+                                    }, handler);
+                                } catch (Exception e) {
+                                    if (onComplete != null) {
+                                        handler.postDelayed(onComplete, 45L);
+                                    }
                                 }
                             }
 
@@ -3925,6 +4136,8 @@ public class TopBarDropService extends AccessibilityService {
     }
 
     private class SnapZonesRootView extends FrameLayout {
+        private boolean releaseSnapScheduled = false;
+
         public SnapZonesRootView(android.content.Context context) {
             super(context);
             setFocusable(true);
@@ -3943,6 +4156,27 @@ public class TopBarDropService extends AccessibilityService {
                         hoveredSnapZoneIndex = idx;
                         if (snapZonesCanvas != null) {
                             snapZonesCanvas.invalidate();
+                        }
+                    }
+                    // When Left-Click is released after dragging a window, InputDispatcher immediately
+                    // begins sending ACTION_HOVER_ENTER / ACTION_HOVER_MOVE with BUTTON_PRIMARY == 0!
+                    if ((event.getButtonState() & MotionEvent.BUTTON_PRIMARY) == 0 && !releaseSnapScheduled) {
+                        if (checkIfWindowMovedFromStart()) {
+                            releaseSnapScheduled = true;
+                            commitHoveredSnapZoneAndDismiss();
+                            return true;
+                        } else {
+                            // Also re-check 60ms later in case SystemUI is committing the dropped window bounds right now
+                            handler.postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (snapZonesShown && !snapZonesDismissing && !releaseSnapScheduled
+                                            && checkIfWindowMovedFromStart()) {
+                                        releaseSnapScheduled = true;
+                                        commitHoveredSnapZoneAndDismiss();
+                                    }
+                                }
+                            }, 60L);
                         }
                     }
                 }
@@ -4098,7 +4332,7 @@ public class TopBarDropService extends AccessibilityService {
                 // Draw center badge inside each zone
                 float cx = tmpRectF.centerX();
                 float cy = tmpRectF.centerY();
-                float badgeW = Math.min(tmpRectF.width() - dpToPx(24f), dpToPx(250f));
+                float badgeW = Math.min(tmpRectF.width() - dpToPx(24f), dpToPx(265f));
                 float badgeH = dpToPx(64f);
                 pillRectF.set(cx - badgeW / 2f, cy - badgeH / 2f, cx + badgeW / 2f, cy + badgeH / 2f);
 
@@ -4124,7 +4358,7 @@ public class TopBarDropService extends AccessibilityService {
                         ? (dark ? Color.parseColor("#A3E635") : Color.parseColor("#0D9488"))
                         : (dark ? Color.parseColor("#94A3B8") : Color.parseColor("#64748B")));
                 String subLabel = hovered
-                        ? "✓ Release Shift / Click to Snap (" + z.bounds.width() + "×" + z.bounds.height() + ")"
+                        ? "✓ Release Left-Click / Shift or Click to Snap (" + z.bounds.width() + "×" + z.bounds.height() + ")"
                         : z.subtitle + " (" + z.bounds.width() + "×" + z.bounds.height() + ")";
                 canvas.drawText(subLabel, cx, cy + dpToPx(15f), subTextPaint);
             }
@@ -4132,7 +4366,7 @@ public class TopBarDropService extends AccessibilityService {
             // Draw Top-Center Floating HUD Pill
             int mode = SnapZonesManager.getLayoutMode(TopBarDropService.this);
             String modeName = SnapZonesManager.getLayoutDisplayName(mode);
-            float hudW = Math.min(getWidth() - dpToPx(32f), dpToPx(640f));
+            float hudW = Math.min(getWidth() - dpToPx(32f), dpToPx(660f));
             float hudH = dpToPx(44f);
             float hudCx = getWidth() / 2f;
             float hudTop = dpToPx(18f);
@@ -4143,9 +4377,9 @@ public class TopBarDropService extends AccessibilityService {
             pillBorderPaint.setColor(Color.parseColor("#2DD4BF"));
             canvas.drawRoundRect(pillRectF, dpToPx(22f), dpToPx(22f), pillBorderPaint);
 
-            titleTextPaint.setTextSize(dpToPx(13f));
+            titleTextPaint.setTextSize(dpToPx(12.5f));
             titleTextPaint.setColor(dark ? Color.parseColor("#E8EAED") : Color.parseColor("#1F2937"));
-            String hudText = "⊞ Snap Zones (" + modeName + ") — Release Shift, Click/Right-Click zone, [1]-[4], or [Tab] to switch layout";
+            String hudText = "⊞ Snap Zones (" + modeName + ") — Drag & release Left-Click, Click/Right-Click zone, [1]-[4], or [Tab]";
             canvas.drawText(hudText, hudCx, hudTop + dpToPx(27f), titleTextPaint);
         }
     }
