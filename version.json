@@ -1,6 +1,6 @@
 {
-  "version": "1.010",
-  "versionCode": 1010,
+  "version": "1.011",
+  "versionCode": 1011,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.010: Fixed FancyZones Shift-drag trigger, added canRetrieveWindowContent capability for live segment highlighting, and added Left-Click release auto-snap + 3-phase hold-drag-hold window resizing"
+  "notes": "BookTools v1.011: Removed experimental FancyZones Shift-drag hook and gesture injection so Shift key and window dragging remain 100% clean and responsive"
 }

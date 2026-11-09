@@ -46,9 +46,6 @@ public class MainActivity extends Activity {
     private Button checkUpdateBtn;
     private View setupCard;
     private TextView lastActionView;
-    private Button quartersSegmentBtn;
-    private Button halfHalfSegmentBtn;
-    private Button tripleColSegmentBtn;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -167,9 +164,7 @@ public class MainActivity extends Activity {
         statusBanner.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!isAccessibilityServiceEnabled()
-                        || (TopBarDropService.instance != null
-                        && !TopBarDropService.instance.hasWindowAndGestureCapabilities())) {
+                if (!isAccessibilityServiceEnabled()) {
                     openAccessibilitySettings();
                 }
             }
@@ -293,83 +288,6 @@ public class MainActivity extends Activity {
                 "Opens a frosted glass history popup of your last 30 copied text snippets, #HEX colors, and PNG images stored 100% locally on your device. Click any item to re-copy it or click-and-drag it straight into any app."
         ));
 
-        shortcutsCard.addView(buildShortcutItem(
-                dark,
-                "Shift + Drag  /  Ctrl + Shift + Z",
-                "Window Snap Zones (PowerToys FancyZones for Googlebook)",
-                "Hold Shift while dragging any window (or press Ctrl+Shift+Z) to outline screen zones. Drag the window into a zone and release Shift (or click / right-click a zone) to snap & resize."
-        ));
-
-        // Segment layout selector: Quarters | Half & Half | Triple Column
-        LinearLayout segmentSection = new LinearLayout(this);
-        segmentSection.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams segSecLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        segSecLp.topMargin = dpToPx(10f);
-
-        TextView segLabel = new TextView(this);
-        segLabel.setText("Snap Zone Segments:");
-        segLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        segLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        segLabel.setTextColor(textPrimary);
-        segmentSection.addView(segLabel);
-
-        LinearLayout segBtnRow = new LinearLayout(this);
-        segBtnRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams segRowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        segRowLp.topMargin = dpToPx(6f);
-
-        quartersSegmentBtn = createActionButton(dark, "⊞ Quarters", false);
-        quartersSegmentBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                SnapZonesManager.setLayoutMode(MainActivity.this, SnapZonesManager.LAYOUT_QUARTERS);
-                refreshUiState();
-                Toast.makeText(MainActivity.this, "Snap Zones set to 4 Quarters (2×2)", Toast.LENGTH_SHORT).show();
-            }
-        });
-        segBtnRow.addView(quartersSegmentBtn, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        ));
-
-        halfHalfSegmentBtn = createActionButton(dark, "◫ Half & Half", false);
-        halfHalfSegmentBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                SnapZonesManager.setLayoutMode(MainActivity.this, SnapZonesManager.LAYOUT_HALF_HALF);
-                refreshUiState();
-                Toast.makeText(MainActivity.this, "Snap Zones set to Half & Half (2 Columns)", Toast.LENGTH_SHORT).show();
-            }
-        });
-        LinearLayout.LayoutParams segLp2 = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        );
-        segLp2.leftMargin = dpToPx(6f);
-        segBtnRow.addView(halfHalfSegmentBtn, segLp2);
-
-        tripleColSegmentBtn = createActionButton(dark, "▤ Triple Column", false);
-        tripleColSegmentBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                SnapZonesManager.setLayoutMode(MainActivity.this, SnapZonesManager.LAYOUT_TRIPLE_COLUMN);
-                refreshUiState();
-                Toast.makeText(MainActivity.this, "Snap Zones set to Triple Column (3 Columns)", Toast.LENGTH_SHORT).show();
-            }
-        });
-        LinearLayout.LayoutParams segLp3 = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        );
-        segLp3.leftMargin = dpToPx(6f);
-        segBtnRow.addView(tripleColSegmentBtn, segLp3);
-
-        segmentSection.addView(segBtnRow, segRowLp);
-        shortcutsCard.addView(segmentSection, segSecLp);
-
         // --- Responsive 2-Column Horizontal Layout for 3:2 Desktop Window ---
         boolean wideLayout = getResources().getConfiguration().screenWidthDp >= 640;
 
@@ -486,21 +404,6 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams btnLp4 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         btnLp4.leftMargin = dpToPx(8f);
         testRow.addView(triggerHistoryBtn, btnLp4);
-
-        Button triggerZonesBtn = createActionButton(dark, "Zones (Ctrl+Shift+Z)", true);
-        triggerZonesBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (TopBarDropService.instance != null) {
-                    TopBarDropService.instance.triggerSnapZonesInteractive();
-                } else {
-                    Toast.makeText(MainActivity.this, "Complete Steps 1 & 2 above to turn on the service first!", Toast.LENGTH_LONG).show();
-                }
-            }
-        });
-        LinearLayout.LayoutParams btnLp5 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        btnLp5.leftMargin = dpToPx(8f);
-        testRow.addView(triggerZonesBtn, btnLp5);
 
         testCard.addView(testRow, testLp);
 
@@ -752,21 +655,14 @@ public class MainActivity extends Activity {
     public void refreshUiState() {
         if (statusBanner == null || lastActionView == null) return;
         boolean active = isAccessibilityServiceEnabled();
-        boolean hasSnapCaps = TopBarDropService.instance == null
-                || TopBarDropService.instance.hasWindowAndGestureCapabilities();
         boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(18f));
-        if (active && hasSnapCaps) {
+        if (active) {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
             statusBanner.setText("✓ Service Active");
-        } else if (active) {
-            bg.setColor(dark ? Color.parseColor("#332811") : Color.parseColor("#FEF7E0"));
-            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#664D14") : Color.parseColor("#FDE293"));
-            statusBanner.setTextColor(dark ? Color.parseColor("#FDD663") : Color.parseColor("#B06000"));
-            statusBanner.setText("↻ Toggle Service Once");
         } else {
             bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
             bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));
@@ -774,32 +670,9 @@ public class MainActivity extends Activity {
             statusBanner.setText("⚠ Setup Needed");
         }
         statusBanner.setBackground(bg);
-        int mode = SnapZonesManager.getLayoutMode(this);
-        styleSegmentButton(quartersSegmentBtn, "⊞ Quarters", mode == SnapZonesManager.LAYOUT_QUARTERS, dark);
-        styleSegmentButton(halfHalfSegmentBtn, "◫ Half & Half", mode == SnapZonesManager.LAYOUT_HALF_HALF, dark);
-        styleSegmentButton(tripleColSegmentBtn, "▤ Triple Column", mode == SnapZonesManager.LAYOUT_TRIPLE_COLUMN, dark);
-
         int localCount = ClipboardHistoryManager.getItemCount(this);
         lastActionView.setText("Status: " + TopBarDropService.lastActionMessage
-                + " · Zones: " + SnapZonesManager.getLayoutDisplayName(mode)
                 + " · Local History: " + localCount + "/" + ClipboardHistoryManager.MAX_HISTORY_ITEMS + " items");
-    }
-
-    private void styleSegmentButton(Button btn, String baseLabel, boolean selected, boolean dark) {
-        if (btn == null) return;
-        btn.setText(selected ? ("✓ " + baseLabel) : baseLabel);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(18f));
-        if (selected) {
-            bg.setColor(dark ? Color.parseColor("#0F766E") : Color.parseColor("#0D9488"));
-            bg.setStroke(dpToPx(1.5f), Color.parseColor("#A3E635"));
-            btn.setTextColor(Color.WHITE);
-        } else {
-            bg.setColor(dark ? Color.parseColor("#282B30") : Color.parseColor("#F1F3F4"));
-            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#3C4043") : Color.parseColor("#DADCE0"));
-            btn.setTextColor(dark ? Color.parseColor("#E8EAED") : Color.parseColor("#202124"));
-        }
-        btn.setBackground(bg);
     }
 
     private void copySampleWebpToClipboard() {
