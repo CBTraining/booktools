@@ -1,6 +1,6 @@
 {
-  "version": "1.012",
-  "versionCode": 1012,
+  "versionCode": 1013,
+  "versionName": "1.013",
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "notes": "BookTools v1.012: Matched exact 38dp height, 10dp corner radius, and vertical text alignment between '✓ Service Active' and 'Check Update'"
+  "changelog": "v1.013: Removed all outlines across the entire UI (cards, badges, buttons, status pills, and frosted-glass popups) for a clean, borderless appearance."
 }

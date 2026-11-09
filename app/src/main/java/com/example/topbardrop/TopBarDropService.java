@@ -511,7 +511,6 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable boxBg = new GradientDrawable();
         boxBg.setCornerRadius(dpToPx(14f));
         boxBg.setColor(boxSurface);
-        boxBg.setStroke(dpToPx(1.5f), accentTeal);
         dragBox.setBackground(boxBg);
 
         previewImageView = new ImageView(this);
@@ -624,23 +623,20 @@ public class TopBarDropService extends AccessibilityService {
     /**
      * Custom LinearLayout that renders a genuine frosted blurry glass effect strictly inside
      * its own rounded card bounds (sampling the blurred screen backdrop at its exact screen
-     * coordinates + translucent glass sheen + specular glass rim), leaving the rest of the
-     * screen 100% sharp and unblurred.
+     * coordinates + translucent glass sheen), leaving the rest of the screen 100% sharp and
+     * unblurred with no outline border.
      */
     private class FrostedGlassCardLayout extends LinearLayout {
         private final boolean dark;
         private final float cornerRadius;
         private final Path clipPath = new Path();
         private final RectF cardBounds = new RectF();
-        private final RectF innerBounds = new RectF();
         private final Rect screenDestRect = new Rect();
         private final int[] locOnScreen = new int[2];
 
         private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
         private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint outerStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint innerRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         public FrostedGlassCardLayout(android.content.Context context, boolean dark, float cornerRadius) {
             super(context);
@@ -650,14 +646,6 @@ public class TopBarDropService extends AccessibilityService {
 
             tintPaint.setStyle(Paint.Style.FILL);
             tintPaint.setColor(dark ? Color.parseColor("#A81A1D26") : Color.parseColor("#B8F2F6FC"));
-
-            outerStrokePaint.setStyle(Paint.Style.STROKE);
-            outerStrokePaint.setStrokeWidth(dpToPx(1.6f));
-            outerStrokePaint.setColor(dark ? Color.parseColor("#882DD4BF") : Color.parseColor("#880D9488"));
-
-            innerRimPaint.setStyle(Paint.Style.STROKE);
-            innerRimPaint.setStrokeWidth(dpToPx(1f));
-            innerRimPaint.setColor(dark ? 0x55FFFFFF : 0xBBFFFFFF);
         }
 
         @Override
@@ -708,20 +696,6 @@ public class TopBarDropService extends AccessibilityService {
             canvas.drawRect(cardBounds, tintPaint);
             canvas.drawRect(cardBounds, sheenPaint);
             canvas.restore();
-
-            // Specular dual glass border
-            float halfStroke = outerStrokePaint.getStrokeWidth() / 2f;
-            innerBounds.set(cardBounds);
-            innerBounds.inset(halfStroke, halfStroke);
-            canvas.drawRoundRect(innerBounds, cornerRadius, cornerRadius, outerStrokePaint);
-
-            innerBounds.inset(dpToPx(1.2f), dpToPx(1.2f));
-            canvas.drawRoundRect(
-                    innerBounds,
-                    Math.max(0f, cornerRadius - dpToPx(1.2f)),
-                    Math.max(0f, cornerRadius - dpToPx(1.2f)),
-                    innerRimPaint
-            );
 
             super.onDraw(canvas);
         }
@@ -1755,11 +1729,6 @@ public class TopBarDropService extends AccessibilityService {
             }
             canvas.drawRect(bounds, glassTintPaint);
             canvas.restore();
-
-            canvas.drawRoundRect(bounds, radius, radius, cardStrokePaint);
-            tempRect.set(bounds);
-            tempRect.inset(dpToPx(1.2f), dpToPx(1.2f));
-            canvas.drawRoundRect(tempRect, Math.max(0f, radius - dpToPx(1.2f)), Math.max(0f, radius - dpToPx(1.2f)), glassRimPaint);
         }
 
         @Override
@@ -1894,7 +1863,6 @@ public class TopBarDropService extends AccessibilityService {
             pixelPaint.setColor(centerColor);
             pixelPaint.setAntiAlias(true);
             canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), pixelPaint);
-            canvas.drawRoundRect(tempRect, dpToPx(6f), dpToPx(6f), cardStrokePaint);
 
             float textLeft = swatchLeft + swatchSize + dpToPx(8f);
             canvas.drawText(hex, textLeft, swatchTop + dpToPx(13f), textPaint);
@@ -1992,7 +1960,6 @@ public class TopBarDropService extends AccessibilityService {
             GradientDrawable swatchBg = new GradientDrawable();
             swatchBg.setShape(GradientDrawable.OVAL);
             swatchBg.setColor(swatchColor);
-            swatchBg.setStroke(dpToPx(1.5f), dark ? Color.WHITE : Color.parseColor("#202124"));
             swatch.setBackground(swatchBg);
             LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(dpToPx(20f), dpToPx(20f));
             swatchLp.rightMargin = dpToPx(10f);
@@ -2451,7 +2418,6 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable clearBg = new GradientDrawable();
         clearBg.setCornerRadius(dpToPx(12f));
         clearBg.setColor(dark ? Color.parseColor("#332DD4BF") : Color.parseColor("#1F0D9488"));
-        clearBg.setStroke(dpToPx(1f), dark ? Color.parseColor("#662DD4BF") : Color.parseColor("#550D9488"));
         clearBtn.setBackground(clearBg);
         clearBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -2649,7 +2615,6 @@ public class TopBarDropService extends AccessibilityService {
             GradientDrawable emptyBg = new GradientDrawable();
             emptyBg.setCornerRadius(dpToPx(14f));
             emptyBg.setColor(rowBgColor);
-            emptyBg.setStroke(dpToPx(1f), rowStrokeColor);
             emptyBox.setBackground(emptyBg);
 
             TextView emptyTitle = new TextView(this);
@@ -2700,7 +2665,6 @@ public class TopBarDropService extends AccessibilityService {
             int rowBgColor,
             int rowStrokeColor
     ) {
-        boolean isTopItem = (index == 0);
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -2711,7 +2675,6 @@ public class TopBarDropService extends AccessibilityService {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(14f));
         bg.setColor(rowBgColor);
-        bg.setStroke(dpToPx(isTopItem ? 1.5f : 1f), isTopItem ? accentTeal : rowStrokeColor);
         row.setBackground(bg);
 
         // 1. Left Badge / Thumbnail / Color Swatch
@@ -2721,7 +2684,6 @@ public class TopBarDropService extends AccessibilityService {
             GradientDrawable thumbBg = new GradientDrawable();
             thumbBg.setCornerRadius(dpToPx(9f));
             thumbBg.setColor(dark ? Color.parseColor("#2A303C") : Color.parseColor("#E2E8F0"));
-            thumbBg.setStroke(dpToPx(1f), accentTeal);
             thumbView.setBackground(thumbBg);
 
             Bitmap thumbBmp = ClipboardHistoryManager.loadThumbnailBitmap(this, item);
@@ -2745,7 +2707,6 @@ public class TopBarDropService extends AccessibilityService {
             GradientDrawable swatchBg = new GradientDrawable();
             swatchBg.setCornerRadius(dpToPx(10f));
             swatchBg.setColor(parsedColor);
-            swatchBg.setStroke(dpToPx(1.5f), dark ? Color.WHITE : Color.parseColor("#202124"));
             colorSwatch.setBackground(swatchBg);
 
             LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(dpToPx(40f), dpToPx(40f));
@@ -2764,7 +2725,6 @@ public class TopBarDropService extends AccessibilityService {
             GradientDrawable badgeBg = new GradientDrawable();
             badgeBg.setCornerRadius(dpToPx(10f));
             badgeBg.setColor(dark ? Color.parseColor("#282DD4BF") : Color.parseColor("#1A0D9488"));
-            badgeBg.setStroke(dpToPx(1f), rowStrokeColor);
             textBadge.setBackground(badgeBg);
 
             LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dpToPx(40f), dpToPx(40f));

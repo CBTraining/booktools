@@ -119,8 +119,7 @@ public class MainActivity extends Activity {
         verBadge.setPadding(dpToPx(8f), dpToPx(2f), dpToPx(8f), dpToPx(2f));
         GradientDrawable verBg = new GradientDrawable();
         verBg.setCornerRadius(dpToPx(10f));
-        verBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#F0FDFA"));
-        verBg.setStroke(dpToPx(1f), dark ? Color.parseColor("#0D9488") : Color.parseColor("#99F6E4"));
+        verBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#E6F7F5"));
         verBadge.setBackground(verBg);
         LinearLayout.LayoutParams verLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -239,13 +238,10 @@ public class MainActivity extends Activity {
                 }
         ));
 
-        View divider = new View(this);
-        divider.setBackgroundColor(dividerColor);
+        View stepSpacer = new View(this);
         LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(1f));
-        divLp.topMargin = dpToPx(10f);
-        divLp.bottomMargin = dpToPx(10f);
-        setupLayout.addView(divider, divLp);
+                LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(12f));
+        setupLayout.addView(stepSpacer, divLp);
 
         setupLayout.addView(buildStepRow(
                 dark,
@@ -478,7 +474,6 @@ public class MainActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dpToPx(14f));
         bg.setColor(dark ? Color.parseColor("#1E2024") : Color.WHITE);
-        bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#34373D") : Color.parseColor("#DADCE0"));
         card.setBackground(bg);
         return card;
     }
@@ -548,8 +543,7 @@ public class MainActivity extends Activity {
         keyBadge.setPadding(dpToPx(10f), dpToPx(6f), dpToPx(10f), dpToPx(6f));
         GradientDrawable keyBg = new GradientDrawable();
         keyBg.setCornerRadius(dpToPx(8f));
-        keyBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#F0FDFA"));
-        keyBg.setStroke(dpToPx(1f), dark ? Color.parseColor("#0D9488") : Color.parseColor("#99F6E4"));
+        keyBg.setColor(dark ? Color.parseColor("#162C2A") : Color.parseColor("#E6F7F5"));
         keyBadge.setBackground(keyBg);
 
         LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams(
@@ -590,6 +584,10 @@ public class MainActivity extends Activity {
         btn.setIncludeFontPadding(false);
         btn.setMinHeight(dpToPx(38f));
         btn.setMinimumHeight(dpToPx(38f));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            btn.setElevation(0f);
+            btn.setStateListAnimator(null);
+        }
         int hPad = dpToPx(14f);
         int vPad = dpToPx(8f);
         btn.setPadding(hPad, vPad, hPad, vPad);
@@ -600,8 +598,7 @@ public class MainActivity extends Activity {
             bg.setColor(dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488"));
             btn.setTextColor(dark ? Color.parseColor("#121316") : Color.WHITE);
         } else {
-            bg.setColor(dark ? Color.parseColor("#282A2E") : Color.parseColor("#F1F3F4"));
-            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#44474E") : Color.parseColor("#BDC1C6"));
+            bg.setColor(dark ? Color.parseColor("#282A2E") : Color.parseColor("#E4E7EB"));
             btn.setTextColor(dark ? Color.parseColor("#E8EAED") : Color.parseColor("#202124"));
         }
         btn.setBackground(bg);
@@ -668,12 +665,10 @@ public class MainActivity extends Activity {
         bg.setCornerRadius(dpToPx(10f));
         if (active) {
             bg.setColor(dark ? Color.parseColor("#142E24") : Color.parseColor("#E6F4EA"));
-            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#1E4D3B") : Color.parseColor("#CEEAD6"));
             statusBanner.setTextColor(dark ? Color.parseColor("#5BB974") : Color.parseColor("#137333"));
             statusBanner.setText("✓ Service Active");
         } else {
             bg.setColor(dark ? Color.parseColor("#361919") : Color.parseColor("#FCE8E6"));
-            bg.setStroke(dpToPx(1f), dark ? Color.parseColor("#5C2B29") : Color.parseColor("#FAD2CF"));
             statusBanner.setTextColor(dark ? Color.parseColor("#F28B82") : Color.parseColor("#C5221F"));
             statusBanner.setText("⚠ Setup Needed");
         }
