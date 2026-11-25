@@ -1,4 +1,4 @@
-package com.example.topbardrop;
+package com.cbtraining.booktools;
 
 import android.app.Activity;
 import android.app.PendingIntent;
@@ -75,9 +75,9 @@ public class AutoUpdater {
     public static String getInstalledVersionName(Context context) {
         try {
             PackageInfo pi = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return pi.versionName != null ? pi.versionName : "1.022";
+            return pi.versionName != null ? pi.versionName : "1.023";
         } catch (Exception e) {
-            return "1.022";
+            return "1.023";
         }
     }
 
@@ -89,7 +89,7 @@ public class AutoUpdater {
             }
             return pi.versionCode;
         } catch (Exception e) {
-            return 1022;
+            return 1023;
         }
     }
 
@@ -408,7 +408,7 @@ public class AutoUpdater {
                 }
 
                 Intent callbackIntent = new Intent(appContext, UpdateInstallReceiver.class);
-                callbackIntent.setAction("com.example.topbardrop.ACTION_INSTALL_COMMIT");
+                callbackIntent.setAction("com.cbtraining.booktools.ACTION_INSTALL_COMMIT");
                 callbackIntent.setPackage(appContext.getPackageName());
                 int flags = PendingIntent.FLAG_UPDATE_CURRENT;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

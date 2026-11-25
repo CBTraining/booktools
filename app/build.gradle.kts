@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace = "com.example.topbardrop"
+    namespace = "com.cbtraining.booktools"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.topbardrop"
+        applicationId = "com.cbtraining.booktools"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1022
-        versionName = "1.022"
+        versionCode = 1023
+        versionName = "1.023"
     }
 
     compileOptions {

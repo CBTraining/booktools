@@ -7,6 +7,6 @@
     android:canTakeScreenshot="true"
     android:notificationTimeout="0"
     android:isAccessibilityTool="false"
-    android:settingsActivity="com.example.topbardrop.MainActivity"
+    android:settingsActivity="com.cbtraining.booktools.MainActivity"
     android:summary="@string/a11y_summary"
     android:description="@string/a11y_description" />

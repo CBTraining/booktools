@@ -1,4 +1,4 @@
-package com.example.topbardrop;
+package com.cbtraining.booktools;
 
 /**
  * Floating desktop dialog activity launched from the Files app right-click menu:

@@ -1,4 +1,4 @@
-package com.example.topbardrop;
+package com.cbtraining.booktools;
 
 import android.graphics.SurfaceTexture;
 import android.opengl.EGL14;
