@@ -104,7 +104,7 @@ public abstract class BaseProgressToolActivity extends Activity {
 
         FrameLayout outerWrap = new FrameLayout(this);
         int outerPad = dp(18f);
-        outerWrap.setPadding(outerPad, outerPad, outerPad, outerPad);
+        MediaToolUtils.applySystemBarInsetsPadding(outerWrap, outerPad, outerPad, outerPad, outerPad);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -222,11 +222,13 @@ public abstract class BaseProgressToolActivity extends Activity {
     }
 
     protected void showDoneButton() {
+        if (isFinishing() || isDestroyed() || cancelOrCloseBtn == null) return;
         cancelOrCloseBtn.setText("Done");
         MediaToolUtils.updateButtonAppearance(this, cancelOrCloseBtn, dark, true);
     }
 
     protected void showErrorState(String message) {
+        if (isFinishing() || isDestroyed() || titleTextView == null) return;
         titleTextView.setText("⚠ Failed");
         subtitleTextView.setText("Could not process media file");
         statusTextView.setText(message);

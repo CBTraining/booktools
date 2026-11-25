@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
+import android.os.Build;
 import android.widget.Toast;
 
 /**
@@ -19,17 +20,24 @@ public class UpdateInstallReceiver extends BroadcastReceiver {
         String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
 
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            Intent confirmIntent = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            Intent confirmIntent = MediaToolUtils.safeGetParcelableExtra(intent, Intent.EXTRA_INTENT, Intent.class);
             if (confirmIntent != null) {
                 try {
-                    if (MainActivity.current != null) {
-                        MainActivity.current.startActivity(confirmIntent);
+                    // On Android 16+ (API 36), Intent Redirection hardening blocks launching a sub-intent
+                    // extracted from an extra unless explicitly allowed; this receiver is non-exported and
+                    // only receives our own PackageInstaller PendingIntent from the OS.
+                    if (Build.VERSION.SDK_INT >= 36) {
+                        confirmIntent.removeLaunchSecurityProtection();
+                    }
+                    MainActivity act = MainActivity.getCurrent();
+                    if (act != null) {
+                        act.startActivity(confirmIntent);
                     } else {
                         confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         context.startActivity(confirmIntent);
                     }
                 } catch (Exception e) {
-                    Toast.makeText(context, "Could not launch update prompt: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(context, "Open BookTools to finish installing the update.", Toast.LENGTH_LONG).show();
                 }
             }
         } else if (status == PackageInstaller.STATUS_SUCCESS) {

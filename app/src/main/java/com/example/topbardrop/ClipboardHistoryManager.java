@@ -24,6 +24,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 
 /**
@@ -32,7 +34,8 @@ import java.util.regex.Pattern;
  *    strictly inside the app's private local storage (context.getFilesDir()) with 0600 permissions.
  *  - Honors Android 13+ ClipDescription.EXTRA_IS_SENSITIVE so passwords/tokens copied from
  *    password managers are automatically ignored and never stored.
- *  - Uses atomic temp-file-and-rename writes so history.json can never be corrupted.
+ *  - Uses atomic temp-file-and-rename writes on a dedicated background I/O thread so
+ *    history.json can never be corrupted and never stalls the UI thread.
  */
 public class ClipboardHistoryManager {
 
@@ -49,6 +52,12 @@ public class ClipboardHistoryManager {
 
     private static final Pattern HEX_COLOR_PATTERN =
             Pattern.compile("^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$");
+
+    private static final ExecutorService SAVE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "BookTools-HistoryIO");
+        t.setDaemon(true);
+        return t;
+    });
 
     public static class HistoryItem {
         public String id;
@@ -274,7 +283,7 @@ public class ClipboardHistoryManager {
         if (!thumbFile.exists()) return null;
         try {
             return BitmapFactory.decodeFile(thumbFile.getAbsolutePath());
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
             return null;
         }
     }
@@ -358,7 +367,7 @@ public class ClipboardHistoryManager {
                 thumb.recycle();
             }
             return fileName;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             return null;
         }
     }
@@ -431,12 +440,14 @@ public class ClipboardHistoryManager {
                 item.timestampMs = obj.optLong("timestampMs", System.currentTimeMillis());
                 cachedItems.add(item);
             }
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
         }
     }
 
     private static void saveLocked(Context context) {
-        if (cachedItems == null) return;
+        if (cachedItems == null || context == null) return;
+        final Context appContext = context.getApplicationContext();
+        final byte[] bytes;
         try {
             JSONArray arr = new JSONArray();
             for (HistoryItem item : cachedItems) {
@@ -453,24 +464,33 @@ public class ClipboardHistoryManager {
                 obj.put("timestampMs", item.timestampMs);
                 arr.put(obj);
             }
-            File dir = getHistoryDir(context);
-            File tmpFile = new File(dir, HISTORY_JSON_NAME + ".tmp");
-            File jsonFile = new File(dir, HISTORY_JSON_NAME);
-            byte[] bytes = arr.toString().getBytes(StandardCharsets.UTF_8);
-            try (FileOutputStream fos = new FileOutputStream(tmpFile, false)) {
-                fos.write(bytes);
-                fos.getFD().sync();
-            }
-            enforceOwnerOnlyPermissions(tmpFile);
-            if (!tmpFile.renameTo(jsonFile)) {
-                try (FileOutputStream fos = new FileOutputStream(jsonFile, false)) {
-                    fos.write(bytes);
-                    fos.flush();
-                }
-                tmpFile.delete();
-            }
-            enforceOwnerOnlyPermissions(jsonFile);
-        } catch (Exception ignored) {
+            bytes = arr.toString().getBytes(StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {
+            return;
         }
+
+        // Persist atomically on a dedicated single-thread serial I/O worker so fsync() never blocks the UI thread
+        SAVE_EXECUTOR.execute(() -> {
+            try {
+                File dir = getHistoryDir(appContext);
+                File tmpFile = new File(dir, HISTORY_JSON_NAME + ".tmp");
+                File jsonFile = new File(dir, HISTORY_JSON_NAME);
+                try (FileOutputStream fos = new FileOutputStream(tmpFile, false)) {
+                    fos.write(bytes);
+                    fos.getFD().sync();
+                }
+                enforceOwnerOnlyPermissions(tmpFile);
+                if (!tmpFile.renameTo(jsonFile)) {
+                    try (FileOutputStream fos = new FileOutputStream(jsonFile, false)) {
+                        fos.write(bytes);
+                        fos.flush();
+                    }
+                    //noinspection ResultOfMethodCallIgnored
+                    tmpFile.delete();
+                }
+                enforceOwnerOnlyPermissions(jsonFile);
+            } catch (Throwable ignored) {
+            }
+        });
     }
 }

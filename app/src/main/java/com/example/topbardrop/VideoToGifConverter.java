@@ -77,6 +77,23 @@ public final class VideoToGifConverter {
         void onFrameReady(Bitmap bitmap);
     }
 
+    public interface InspectCallback {
+        void onVideoInspected(VideoCompressor.VideoInfo info);
+    }
+
+    public static void inspectVideoAsync(
+            final Context context,
+            final Uri videoUri,
+            final InspectCallback callback
+    ) {
+        final Context appContext = context.getApplicationContext();
+        final Handler mainHandler = new Handler(Looper.getMainLooper());
+        PREVIEW_EXECUTOR.execute(() -> {
+            VideoCompressor.VideoInfo info = VideoCompressor.inspectVideo(appContext, videoUri);
+            mainHandler.post(() -> callback.onVideoInspected(info));
+        });
+    }
+
     /**
      * Coalesces rapid scrub events so only the most recent timestamp is decoded, and reuses
      * a cached MediaMetadataRetriever for the active video Uri.
@@ -111,8 +128,9 @@ public final class VideoToGifConverter {
             } finally {
                 previewWorkerRunning.set(false);
                 // If another scrub arrived right as we finished, drain it
-                if (pendingPreviewTimeMs.get() >= 0L) {
-                    loadPreviewFrameAsync(appContext, videoUri, pendingPreviewTimeMs.get(), callback);
+                long nextMs = pendingPreviewTimeMs.get();
+                if (nextMs >= 0L) {
+                    loadPreviewFrameAsync(appContext, videoUri, nextMs, callback);
                 }
             }
         });
@@ -140,13 +158,14 @@ public final class VideoToGifConverter {
                 bmp = cachedPreviewRetriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             }
             return bmp;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             releasePreviewRetrieverInternal();
             return null;
         }
     }
 
     public static void releasePreviewRetriever() {
+        pendingPreviewTimeMs.set(-1L);
         PREVIEW_EXECUTOR.execute(VideoToGifConverter::releasePreviewRetrieverInternal);
     }
 
@@ -323,8 +342,10 @@ public final class VideoToGifConverter {
                         encodedFrames
                 );
                 mainHandler.post(() -> callback.onSuccess(result));
-            } catch (Exception e) {
-                final String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            } catch (Throwable e) {
+                final String msg = (e instanceof OutOfMemoryError)
+                        ? "Video frames are too large for available memory."
+                        : (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 mainHandler.post(() -> callback.onError(msg));
             } finally {
                 try {

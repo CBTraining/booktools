@@ -1,7 +1,7 @@
 {
-  "version": "1.021",
-  "versionName": "1.021",
-  "versionCode": 1021,
+  "version": "1.022",
+  "versionName": "1.022",
+  "versionCode": 1022,
   "apkUrl": "https://raw.githubusercontent.com/CBTraining/booktools/main/BookTools.apk",
-  "changelog": "v1.021: Added 'Extract PDF images (ZIP)' to Files Right-Click ('Open with' / 'Share') menu — extracts embedded PDF images and high-resolution page PNGs 100% offline into a single .zip in Downloads."
+  "changelog": "v1.022: Android 16/17 (API 36) & Googlebook stability + efficiency overhaul — fixed HWUI bitmap/EGL crashes, clipboard focus probe & WindowLeaked issues, Android 16 Intent Redirection in updater, edge-to-edge & multi-display support, 95% lower 2x upscale peak heap, 85x smaller GIF LZW table + spec fix, O(W*H) background blur, and async clipboard history I/O."
 }

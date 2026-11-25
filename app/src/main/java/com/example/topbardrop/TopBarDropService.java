@@ -14,10 +14,12 @@ import android.graphics.ImageDecoder;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.HardwareBuffer;
+import android.hardware.display.DisplayManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -35,6 +37,7 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
@@ -54,6 +57,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Global keyboard shortcut service for BookTools:
@@ -77,10 +82,28 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
     private WindowManager windowManager;
     private Handler handler;
-    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "BookTools-ServiceIO");
+        t.setDaemon(true);
+        return t;
+    });
     private ClipboardManager clipboardManager;
     private ClipboardManager.OnPrimaryClipChangedListener clipChangedListener;
     private View focusProbeView;
+    private volatile boolean serviceActive = false;
+    private final List<View> activeStatusPills = new ArrayList<>();
+
+    // Coalesced clipboard capture & deduplication state
+    private final Runnable clipboardCaptureRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (serviceActive) {
+                captureSystemClipboardToLocalHistory(true);
+            }
+        }
+    };
+    private String lastIngestedClipFingerprint = null;
+    private long lastIngestedClipTimeMs = 0L;
 
     // --- Ctrl + Shift + D (Clipboard PNG Popup) state ---
     private OverlayRootView popupRoot;
@@ -101,15 +124,19 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     private boolean clipboardProcessedForCurrentPopup = false;
     private long lastShortcutTriggerMs = 0L;
 
-    // --- Ctrl + Shift + C (Screen Color Picker) state ---
+    // --- Ctrl + Shift + C (Screen Color Picker) & Shared Backdrop state ---
     private ColorPickerRootView colorPickerRoot;
     private ColorPickerCanvasView colorPickerCanvas;
     private WindowManager.LayoutParams colorPickerParams;
     private boolean colorPickerShown = false;
     private boolean colorPickerDismissing = false;
     private boolean colorPickerCaptureInFlight = false;
+    private final AtomicInteger backdropCaptureGen = new AtomicInteger(0);
+    private final AtomicInteger colorPickerCaptureGen = new AtomicInteger(0);
     private Bitmap lastCapturedScreenBitmap;
     private Bitmap lastBlurredScreenBitmap;
+    private int capturedScreenWidth = 0;
+    private int capturedScreenHeight = 0;
     private long lastColorPickerTriggerMs = 0L;
 
     // --- Ctrl + Shift + G (100% Local Clipboard History) state ---
@@ -118,7 +145,6 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     private WindowManager.LayoutParams historyParams;
     private LinearLayout historyItemsContainer;
     private TextView historySubtitleView;
-    private final List<Bitmap> activeHistoryThumbBitmaps = new ArrayList<>();
     private boolean historyShown = false;
     private boolean historyDismissing = false;
     private boolean historySyncedCurrentClip = false;
@@ -128,6 +154,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     public void onCreate() {
         super.onCreate();
         instance = this;
+        serviceActive = true;
         handler = new Handler(Looper.getMainLooper());
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         registerLocalClipboardMonitor();
@@ -137,9 +164,11 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        serviceActive = true;
         lastActionMessage = "Active — Ctrl+Shift+D (PNG) · Ctrl+Shift+C (Color) · Ctrl+Shift+G (History)";
         notifyActivityStatus();
-        AutoUpdater.checkForUpdates(this, false, true, null);
+        // Check silently from background service; never launch install/settings activities from background
+        AutoUpdater.checkForUpdates(this, false, false, null);
     }
 
     @Override
@@ -150,14 +179,33 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         return MediaToolUtils.isDarkMode(this);
     }
 
-    @Override
-    public Bitmap getCapturedScreenBitmap() {
-        return lastCapturedScreenBitmap;
+    private void runIoTask(Runnable task) {
+        if (!serviceActive || ioExecutor.isShutdown() || task == null) return;
+        try {
+            ioExecutor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+        }
+    }
+
+    private void scheduleClipboardHistoryCapture(long delayMs) {
+        if (!serviceActive || handler == null) return;
+        handler.removeCallbacks(clipboardCaptureRunnable);
+        handler.postDelayed(clipboardCaptureRunnable, delayMs);
     }
 
     @Override
     public Bitmap getBlurredScreenBitmap() {
         return lastBlurredScreenBitmap;
+    }
+
+    @Override
+    public int getBackdropScreenWidth() {
+        return capturedScreenWidth;
+    }
+
+    @Override
+    public int getBackdropScreenHeight() {
+        return capturedScreenHeight;
     }
 
     @Override
@@ -173,7 +221,9 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
-                            triggerClipboardToPngPopup();
+                            if (serviceActive) {
+                                triggerClipboardToPngPopup();
+                            }
                         }
                     });
                 }
@@ -188,6 +238,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
+                            if (!serviceActive) return;
                             if (colorPickerShown && !colorPickerDismissing) {
                                 dismissColorPicker(true);
                             } else {
@@ -207,6 +258,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
+                            if (!serviceActive) return;
                             if (historyShown && !historyDismissing) {
                                 dismissHistoryPopup(true);
                             } else {
@@ -221,12 +273,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
             // Detect standard Ctrl + C or Ctrl + X (without Shift) to capture newly copied items locally
             if ((keyCode == KeyEvent.KEYCODE_C || keyCode == KeyEvent.KEYCODE_X)
                     && event.isCtrlPressed() && !event.isShiftPressed() && !event.isAltPressed()) {
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        captureSystemClipboardToLocalHistory(true);
-                    }
-                }, 90L);
+                scheduleClipboardHistoryCapture(100L);
             }
 
             // Escape dismisses whichever overlay is open
@@ -267,12 +314,31 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     public void onInterrupt() {
     }
 
+    private void removeAllStatusPillsImmediate() {
+        for (int i = activeStatusPills.size() - 1; i >= 0; i--) {
+            safeRemoveOverlayView(activeStatusPills.get(i));
+        }
+        activeStatusPills.clear();
+    }
+
     @Override
     public boolean onUnbind(android.content.Intent intent) {
+        serviceActive = false;
+        backdropCaptureGen.incrementAndGet();
+        colorPickerCaptureGen.incrementAndGet();
+        colorPickerCaptureInFlight = false;
+        if (handler != null) {
+            handler.removeCallbacksAndMessages(null);
+        }
         dismissPopup(false);
         dismissColorPicker(false);
         dismissHistoryPopup(false);
+        removeAllStatusPillsImmediate();
         removeFocusProbeViewImmediate();
+        lastCapturedScreenBitmap = null;
+        lastBlurredScreenBitmap = null;
+        capturedScreenWidth = 0;
+        capturedScreenHeight = 0;
         instance = null;
         notifyActivityStatus();
         return super.onUnbind(intent);
@@ -280,20 +346,24 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
     @Override
     public void onDestroy() {
+        serviceActive = false;
+        backdropCaptureGen.incrementAndGet();
+        colorPickerCaptureGen.incrementAndGet();
+        colorPickerCaptureInFlight = false;
         unregisterLocalClipboardMonitor();
+        if (handler != null) {
+            handler.removeCallbacksAndMessages(null);
+        }
         ioExecutor.shutdownNow();
         dismissPopup(false);
         dismissColorPicker(false);
         dismissHistoryPopup(false);
+        removeAllStatusPillsImmediate();
         removeFocusProbeViewImmediate();
-        if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-            lastCapturedScreenBitmap.recycle();
-            lastCapturedScreenBitmap = null;
-        }
-        if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
-            lastBlurredScreenBitmap.recycle();
-            lastBlurredScreenBitmap = null;
-        }
+        lastCapturedScreenBitmap = null;
+        lastBlurredScreenBitmap = null;
+        capturedScreenWidth = 0;
+        capturedScreenHeight = 0;
         instance = null;
         notifyActivityStatus();
         super.onDestroy();
@@ -339,8 +409,12 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
     private int getActiveDisplayId() {
         try {
-            if (windowManager != null && windowManager.getDefaultDisplay() != null) {
-                return windowManager.getDefaultDisplay().getDisplayId();
+            DisplayManager dm = getSystemService(DisplayManager.class);
+            if (dm != null) {
+                Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                if (d != null) {
+                    return d.getDisplayId();
+                }
             }
         } catch (Exception ignored) {
         }
@@ -365,7 +439,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     hb.close();
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
         }
         return null;
     }
@@ -384,46 +458,81 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void captureBackdropAndRun(final Runnable openAction, final boolean isHistory) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && serviceActive && !ioExecutor.isShutdown()) {
+            final int gen = backdropCaptureGen.incrementAndGet();
             final boolean[] shown = new boolean[]{false};
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    if (!shown[0]) {
+                    if (serviceActive && backdropCaptureGen.get() == gen && !shown[0]) {
                         shown[0] = true;
                         openAction.run();
                     }
                 }
-            }, 85L);
+            }, 140L);
 
             try {
                 takeScreenshot(
                         getActiveDisplayId(),
-                        getMainExecutor(),
+                        ioExecutor,
                         new TakeScreenshotCallback() {
                             @Override
                             public void onSuccess(ScreenshotResult screenshot) {
+                                // Process HardwareBuffer copy + 1/8th scale blur OFF the main thread,
+                                // then immediately recycle the offscreen full-res bitmap so 16-33MB
+                                // never sits in RAM for a frosted glass popup.
                                 Bitmap sw = extractSoftwareBitmap(screenshot);
+                                Bitmap blurred = null;
+                                int swW = 0;
+                                int swH = 0;
                                 if (sw != null) {
-                                    updateCachedScreenBitmaps(sw);
-                                }
-                                if (!shown[0]) {
-                                    shown[0] = true;
-                                    openAction.run();
-                                } else {
-                                    View card = isHistory ? historyCard : popupCard;
-                                    if (card != null) {
-                                        card.invalidate();
+                                    swW = sw.getWidth();
+                                    swH = sw.getHeight();
+                                    blurred = FrostedGlassCardLayout.createBlurredBackdropBitmap(sw);
+                                    if (!sw.isRecycled()) {
+                                        sw.recycle();
                                     }
                                 }
+                                final Bitmap finalBlurred = blurred;
+                                final int finalW = swW;
+                                final int finalH = swH;
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (!serviceActive || backdropCaptureGen.get() != gen) {
+                                            return;
+                                        }
+                                        if (finalBlurred != null && finalW > 0 && finalH > 0) {
+                                            lastBlurredScreenBitmap = finalBlurred;
+                                            capturedScreenWidth = finalW;
+                                            capturedScreenHeight = finalH;
+                                        }
+                                        if (!shown[0]) {
+                                            shown[0] = true;
+                                            openAction.run();
+                                        } else {
+                                            View card = isHistory ? historyCard : popupCard;
+                                            if (card != null && (isHistory ? historyShown : popupShown)) {
+                                                card.invalidate();
+                                            } else {
+                                                releaseScreenBitmapsIfIdle();
+                                            }
+                                        }
+                                    }
+                                });
                             }
 
                             @Override
                             public void onFailure(int errorCode) {
-                                if (!shown[0]) {
-                                    shown[0] = true;
-                                    openAction.run();
-                                }
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (serviceActive && backdropCaptureGen.get() == gen && !shown[0]) {
+                                            shown[0] = true;
+                                            openAction.run();
+                                        }
+                                    }
+                                });
                             }
                         }
                 );
@@ -434,15 +543,19 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         openAction.run();
     }
 
-    private void updateCachedScreenBitmaps(Bitmap swBitmap) {
-        if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-            lastCapturedScreenBitmap.recycle();
-        }
-        if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
-            lastBlurredScreenBitmap.recycle();
-        }
+    private void updateCachedColorPickerBitmaps(Bitmap swBitmap, Bitmap precomputedBlurred) {
+        // Never call manual recycle() on UI-attached bitmaps; HWUI RenderThread may still
+        // hold a display-list reference. NativeAllocationRegistry frees them cleanly on GC.
         lastCapturedScreenBitmap = swBitmap;
-        lastBlurredScreenBitmap = FrostedGlassCardLayout.createBlurredBackdropBitmap(swBitmap);
+        if (swBitmap != null && !swBitmap.isRecycled()) {
+            capturedScreenWidth = swBitmap.getWidth();
+            capturedScreenHeight = swBitmap.getHeight();
+            lastBlurredScreenBitmap = (precomputedBlurred != null)
+                    ? precomputedBlurred
+                    : FrostedGlassCardLayout.createBlurredBackdropBitmap(swBitmap);
+        } else {
+            lastBlurredScreenBitmap = precomputedBlurred;
+        }
     }
 
     private void openPopupAndProcessClipboard() {
@@ -681,10 +794,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         if (previewImageView != null) {
             previewImageView.setImageDrawable(null);
         }
-        if (currentPreviewBitmap != null && !currentPreviewBitmap.isRecycled()) {
-            currentPreviewBitmap.recycle();
-            currentPreviewBitmap = null;
-        }
+        currentPreviewBitmap = null;
         safeRemoveOverlayView(popupRoot);
         popupRoot = null;
         popupCard = null;
@@ -694,15 +804,14 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void releaseScreenBitmapsIfIdle() {
-        if (!popupShown && !colorPickerShown && !historyShown && !colorPickerCaptureInFlight) {
-            if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
-                lastCapturedScreenBitmap.recycle();
-            }
+        if (!colorPickerShown && !colorPickerCaptureInFlight) {
             lastCapturedScreenBitmap = null;
-            if (lastBlurredScreenBitmap != null && !lastBlurredScreenBitmap.isRecycled()) {
-                lastBlurredScreenBitmap.recycle();
-            }
+        }
+        if (!popupShown && !colorPickerShown && !historyShown
+                && !colorPickerCaptureInFlight && activeStatusPills.isEmpty()) {
             lastBlurredScreenBitmap = null;
+            capturedScreenWidth = 0;
+            capturedScreenHeight = 0;
         }
     }
 
@@ -765,6 +874,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private Bitmap decodeBitmapFromUri(ContentResolver resolver, Uri uri) {
+        final int maxClipboardDim = 4096;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 ImageDecoder.Source source = ImageDecoder.createSource(resolver, uri);
@@ -772,16 +882,42 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     @Override
                     public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info, ImageDecoder.Source src) {
                         decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+                        int w = info.getSize().getWidth();
+                        int h = info.getSize().getHeight();
+                        int longest = Math.max(w, h);
+                        if (longest > maxClipboardDim) {
+                            double scale = (double) maxClipboardDim / (double) longest;
+                            decoder.setTargetSize(
+                                    Math.max(1, (int) Math.round(w * scale)),
+                                    Math.max(1, (int) Math.round(h * scale))
+                            );
+                        }
                     }
                 });
             }
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
         }
-        try (InputStream in = resolver.openInputStream(uri)) {
-            if (in != null) {
-                return BitmapFactory.decodeStream(in);
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream in = resolver.openInputStream(uri)) {
+                if (in != null) {
+                    BitmapFactory.decodeStream(in, null, bounds);
+                }
             }
-        } catch (Exception ignored) {
+            int sample = 1;
+            int longest = Math.max(bounds.outWidth, bounds.outHeight);
+            while (longest > 0 && longest / sample > maxClipboardDim) {
+                sample *= 2;
+            }
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sample;
+            try (InputStream in = resolver.openInputStream(uri)) {
+                if (in != null) {
+                    return BitmapFactory.decodeStream(in, null, opts);
+                }
+            }
+        } catch (Throwable ignored) {
         }
         return null;
     }
@@ -803,8 +939,18 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         }
         try {
             byte[] raw = Base64.decode(text.substring(start, end), Base64.DEFAULT);
-            return BitmapFactory.decodeByteArray(raw, 0, raw.length);
-        } catch (Exception ignored) {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(raw, 0, raw.length, bounds);
+            int sample = 1;
+            int longest = Math.max(bounds.outWidth, bounds.outHeight);
+            while (longest > 0 && longest / sample > 4096) {
+                sample *= 2;
+            }
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sample;
+            return BitmapFactory.decodeByteArray(raw, 0, raw.length, opts);
+        } catch (Throwable ignored) {
             return null;
         }
     }
@@ -840,7 +986,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         final int fullHeight = bitmap.getHeight();
         final int maxPreviewDim = dpToPx(280f);
 
-        ioExecutor.execute(new Runnable() {
+        runIoTask(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -849,7 +995,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     final String pngFileName = saved.fileName;
 
                     // Create a lightweight downscaled thumbnail for the popup preview and immediately
-                    // recycle the full-resolution bitmap so large 4K clipboard images never sit in RAM.
+                    // recycle the strictly-offscreen full-res bitmap so large 4K clipboard images never sit in RAM.
                     Bitmap scaledPreview = bitmap;
                     if (fullWidth > maxPreviewDim || fullHeight > maxPreviewDim) {
                         float ratio = Math.min((float) maxPreviewDim / fullWidth, (float) maxPreviewDim / fullHeight);
@@ -875,17 +1021,11 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
-                            if (!popupShown || popupDismissing) {
-                                if (finalPreviewBmp != null && !finalPreviewBmp.isRecycled()) {
-                                    finalPreviewBmp.recycle();
-                                }
+                            if (!serviceActive || !popupShown || popupDismissing) {
                                 return;
                             }
                             currentPngUri = savedUri;
                             currentPngFileName = pngFileName;
-                            if (currentPreviewBitmap != null && currentPreviewBitmap != finalPreviewBmp && !currentPreviewBitmap.isRecycled()) {
-                                currentPreviewBitmap.recycle();
-                            }
                             currentPreviewBitmap = finalPreviewBmp;
 
                             headerTitleView.setText("Saved PNG: " + pngFileName);
@@ -906,14 +1046,15 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                             notifyActivityStatus();
                         }
                     });
-                } catch (final Exception e) {
+                } catch (final Throwable e) {
                     if (!bitmap.isRecycled()) {
                         bitmap.recycle();
                     }
+                    final String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                     handler.post(new Runnable() {
                         @Override
                         public void run() {
-                            showPopupError("Failed to save PNG", e.getMessage());
+                            showPopupError("Failed to save PNG", errMsg);
                         }
                     });
                 }
@@ -1205,51 +1346,76 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void captureScreenAndOpenColorPicker() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !serviceActive || ioExecutor.isShutdown()) {
             openColorPickerWithFallback(null);
             return;
         }
 
+        final int gen = colorPickerCaptureGen.incrementAndGet();
         colorPickerCaptureInFlight = true;
 
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (colorPickerCaptureInFlight && !colorPickerShown) {
+                if (serviceActive && colorPickerCaptureGen.get() == gen
+                        && colorPickerCaptureInFlight && !colorPickerShown) {
                     colorPickerCaptureInFlight = false;
                     openColorPickerWithFallback("Toggle BookTools OFF & ON once in Accessibility Settings to refresh screen capture");
                 }
             }
-        }, 220);
+        }, 650L);
 
         try {
             takeScreenshot(
                     getActiveDisplayId(),
-                    getMainExecutor(),
+                    ioExecutor,
                     new TakeScreenshotCallback() {
                         @Override
                         public void onSuccess(ScreenshotResult screenshot) {
-                            if (!colorPickerCaptureInFlight) return;
-                            colorPickerCaptureInFlight = false;
-
                             Bitmap swBitmap = extractSoftwareBitmap(screenshot);
-                            if (swBitmap != null) {
-                                updateCachedScreenBitmaps(swBitmap);
-                                showColorPickerOverlay(swBitmap, null);
-                            } else {
-                                openColorPickerWithFallback(null);
-                            }
+                            Bitmap blurred = (swBitmap != null)
+                                    ? FrostedGlassCardLayout.createBlurredBackdropBitmap(swBitmap)
+                                    : null;
+                            final Bitmap finalSw = swBitmap;
+                            final Bitmap finalBlurred = blurred;
+                            handler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (!serviceActive || colorPickerCaptureGen.get() != gen
+                                            || !colorPickerCaptureInFlight) {
+                                        return;
+                                    }
+                                    colorPickerCaptureInFlight = false;
+                                    if (finalSw != null) {
+                                        updateCachedColorPickerBitmaps(finalSw, finalBlurred);
+                                        showColorPickerOverlay(finalSw, null);
+                                    } else {
+                                        openColorPickerWithFallback(null);
+                                    }
+                                }
+                            });
                         }
 
                         @Override
-                        public void onFailure(int errorCode) {
-                            if (!colorPickerCaptureInFlight) return;
-                            colorPickerCaptureInFlight = false;
-                            String hint = (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS
-                                    || errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
-                                    ? "Tip: Toggle BookTools OFF & ON once in Accessibility Settings to enable full-screen pixel capture"
-                                    : null;
-                            openColorPickerWithFallback(hint);
+                        public void onFailure(final int errorCode) {
+                            handler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (!serviceActive || colorPickerCaptureGen.get() != gen
+                                            || !colorPickerCaptureInFlight) {
+                                        return;
+                                    }
+                                    colorPickerCaptureInFlight = false;
+                                    String hint = null;
+                                    if (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS
+                                            || errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR) {
+                                        hint = "Tip: Toggle BookTools OFF & ON once in Accessibility Settings to enable full-screen pixel capture";
+                                    } else if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
+                                        hint = "Wait 1 second between screen captures · Showing fallback";
+                                    }
+                                    openColorPickerWithFallback(hint);
+                                }
+                            });
                         }
                     }
             );
@@ -1260,46 +1426,64 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void openColorPickerWithFallback(String bannerHint) {
+        if (!serviceActive) return;
         if (lastCapturedScreenBitmap != null && !lastCapturedScreenBitmap.isRecycled()) {
             showColorPickerOverlay(lastCapturedScreenBitmap, bannerHint);
             return;
         }
-        if (MainActivity.current != null) {
-            Bitmap actBmp = MainActivity.current.captureActivityWindowBitmap();
+        MainActivity act = MainActivity.getCurrent();
+        if (act != null) {
+            Bitmap actBmp = act.captureActivityWindowBitmap();
             if (actBmp != null) {
-                updateCachedScreenBitmaps(actBmp);
+                updateCachedColorPickerBitmaps(actBmp, null);
                 showColorPickerOverlay(actBmp, bannerHint);
                 return;
             }
         }
         Bitmap fallbackBmp = createFallbackSpectrumBitmap();
-        updateCachedScreenBitmaps(fallbackBmp);
-        showColorPickerOverlay(fallbackBmp, bannerHint);
+        if (fallbackBmp != null) {
+            updateCachedColorPickerBitmaps(fallbackBmp, null);
+            showColorPickerOverlay(fallbackBmp, bannerHint);
+        }
     }
 
     private Bitmap createFallbackSpectrumBitmap() {
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        int w = Math.max(800, dm.widthPixels);
-        int h = Math.max(600, dm.heightPixels);
-        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        Canvas c = new Canvas(bmp);
-        Paint p = new Paint();
-        p.setShader(new LinearGradient(0, 0, w, h,
-                new int[]{
-                        Color.parseColor("#A3E635"),
-                        Color.parseColor("#2DD4BF"),
-                        Color.parseColor("#0D9488"),
-                        Color.parseColor("#3B82F6"),
-                        Color.parseColor("#8B5CF6"),
-                        Color.parseColor("#EC4899")
-                },
-                null,
-                Shader.TileMode.CLAMP));
-        c.drawRect(0, 0, w, h, p);
-        return bmp;
+        try {
+            int w;
+            int h;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowManager != null) {
+                WindowMetrics wm = windowManager.getMaximumWindowMetrics();
+                Rect b = wm.getBounds();
+                w = Math.max(800, Math.min(2560, b.width()));
+                h = Math.max(600, Math.min(1600, b.height()));
+            } else {
+                DisplayMetrics dm = getResources().getDisplayMetrics();
+                w = Math.max(800, Math.min(2560, dm.widthPixels));
+                h = Math.max(600, Math.min(1600, dm.heightPixels));
+            }
+            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(bmp);
+            Paint p = new Paint();
+            p.setShader(new LinearGradient(0, 0, w, h,
+                    new int[]{
+                            Color.parseColor("#A3E635"),
+                            Color.parseColor("#2DD4BF"),
+                            Color.parseColor("#0D9488"),
+                            Color.parseColor("#3B82F6"),
+                            Color.parseColor("#8B5CF6"),
+                            Color.parseColor("#EC4899")
+                    },
+                    null,
+                    Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, w, h, p);
+            return bmp;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private void showColorPickerOverlay(Bitmap bitmap, String bannerHint) {
+        if (!serviceActive || windowManager == null) return;
         dismissColorPicker(false);
 
         colorPickerRoot = new ColorPickerRootView(this);
@@ -1348,6 +1532,14 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         colorPickerParams.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            colorPickerParams.setFitInsetsTypes(0);
+            colorPickerParams.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        } else {
+            colorPickerParams.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
         colorPickerParams.setTitle("BookTools Color Picker");
 
         try {
@@ -1472,6 +1664,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void showFloatingStatusPill(int swatchColor, boolean showColorSwatch, String message) {
+        if (!serviceActive || windowManager == null) return;
         boolean dark = isDarkMode();
         final FrameLayout badgeRoot = new FrameLayout(this);
         int outerPad = dpToPx(8f);
@@ -1522,6 +1715,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
         try {
             windowManager.addView(badgeRoot, lp);
+            activeStatusPills.add(badgeRoot);
             pill.animate()
                     .scaleX(1f)
                     .scaleY(1f)
@@ -1533,6 +1727,9 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
+                    if (!activeStatusPills.contains(badgeRoot)) {
+                        return;
+                    }
                     pill.animate()
                             .scaleX(0.8f)
                             .scaleY(0.8f)
@@ -1542,16 +1739,16 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                             .withEndAction(new Runnable() {
                                 @Override
                                 public void run() {
-                                    try {
-                                        windowManager.removeView(badgeRoot);
-                                    } catch (Exception ignored) {
-                                    }
+                                    activeStatusPills.remove(badgeRoot);
+                                    safeRemoveOverlayView(badgeRoot);
+                                    releaseScreenBitmapsIfIdle();
                                 }
                             })
                             .start();
                 }
             }, 1500);
         } catch (Exception ignored) {
+            activeStatusPills.remove(badgeRoot);
         }
     }
 
@@ -1569,15 +1766,10 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                 clipChangedListener = new ClipboardManager.OnPrimaryClipChangedListener() {
                     @Override
                     public void onPrimaryClipChanged() {
-                        if (ClipboardHistoryManager.isInternalClipboardWriteSuppressed()) {
+                        if (!serviceActive || ClipboardHistoryManager.isInternalClipboardWriteSuppressed()) {
                             return;
                         }
-                        handler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                captureSystemClipboardToLocalHistory(true);
-                            }
-                        }, 60L);
+                        scheduleClipboardHistoryCapture(70L);
                     }
                 };
                 clipboardManager.addPrimaryClipChangedListener(clipChangedListener);
@@ -1597,7 +1789,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void captureSystemClipboardToLocalHistory(boolean allowFocusProbeIfUnfocused) {
-        if (ClipboardHistoryManager.isInternalClipboardWriteSuppressed()) {
+        if (!serviceActive || ClipboardHistoryManager.isInternalClipboardWriteSuppressed()) {
             return;
         }
         if (clipboardManager == null) {
@@ -1627,18 +1819,20 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void attachBriefFocusProbeForClipboard() {
-        if (windowManager == null || focusProbeView != null) return;
+        if (!serviceActive || windowManager == null || focusProbeView != null) return;
         try {
             final View probe = new View(this);
+            final boolean[] handled = new boolean[]{false};
             probe.setFocusable(true);
             probe.setFocusableInTouchMode(true);
             probe.getViewTreeObserver().addOnWindowFocusChangeListener(
                     new ViewTreeObserver.OnWindowFocusChangeListener() {
                         @Override
                         public void onWindowFocusChanged(boolean hasFocus) {
-                            if (hasFocus) {
+                            if (hasFocus && !handled[0]) {
+                                handled[0] = true;
                                 try {
-                                    if (clipboardManager != null) {
+                                    if (serviceActive && clipboardManager != null) {
                                         ClipData clip = clipboardManager.getPrimaryClip();
                                         if (clip != null && clip.getItemCount() > 0) {
                                             ingestClipDataIntoLocalHistory(clip);
@@ -1646,7 +1840,16 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
                                     }
                                 } catch (Exception ignored) {
                                 } finally {
-                                    removeFocusProbeViewImmediate();
+                                    // Defer window removal to the next message loop turn so ViewRootImpl
+                                    // finishes its focus dispatch cleanly (prevents Android 15-17 crashes).
+                                    handler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (focusProbeView == probe) {
+                                                removeFocusProbeViewImmediate();
+                                            }
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -1673,7 +1876,9 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    removeFocusProbeViewImmediate();
+                    if (focusProbeView == probe) {
+                        removeFocusProbeViewImmediate();
+                    }
                 }
             }, 140L);
         } catch (Exception ignored) {
@@ -1686,12 +1891,42 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         focusProbeView = null;
     }
 
+    private String computeClipFingerprint(ClipData clip) {
+        if (clip == null || clip.getItemCount() == 0) return null;
+        ClipData.Item first = clip.getItemAt(0);
+        if (first == null) return null;
+        if (first.getUri() != null) {
+            return "U:" + first.getUri().toString();
+        }
+        CharSequence t = first.getText();
+        if (t != null && t.length() > 0) {
+            int len = t.length();
+            return "T:" + len + ":" + t.subSequence(0, Math.min(64, len));
+        }
+        String html = first.getHtmlText();
+        if (html != null && !html.isEmpty()) {
+            int len = html.length();
+            return "H:" + len + ":" + html.substring(0, Math.min(64, len));
+        }
+        return null;
+    }
+
     private void ingestClipDataIntoLocalHistory(ClipData clip) {
         if (clip == null || clip.getItemCount() == 0) return;
         // Privacy & Security: Never record sensitive clips (e.g., passwords from password managers)
         if (ClipboardHistoryManager.isSensitiveClip(clip)) {
             return;
         }
+        String fingerprint = computeClipFingerprint(clip);
+        long now = System.currentTimeMillis();
+        if (fingerprint != null
+                && fingerprint.equals(lastIngestedClipFingerprint)
+                && (now - lastIngestedClipTimeMs) < 1200L) {
+            return;
+        }
+        lastIngestedClipFingerprint = fingerprint;
+        lastIngestedClipTimeMs = now;
+
         final ContentResolver resolver = getContentResolver();
 
         for (int i = 0; i < clip.getItemCount(); i++) {
@@ -1700,7 +1935,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
             final Uri uri = item.getUri();
             if (uri != null) {
-                ioExecutor.execute(new Runnable() {
+                runIoTask(new Runnable() {
                     @Override
                     public void run() {
                         Bitmap bmp = decodeBitmapFromUri(resolver, uri);
@@ -1716,7 +1951,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
             if (textCs != null && textCs.length() > 0) {
                 final String text = textCs.toString();
                 if (text.contains("data:image/")) {
-                    ioExecutor.execute(new Runnable() {
+                    runIoTask(new Runnable() {
                         @Override
                         public void run() {
                             Bitmap dataBmp = decodeBitmapFromDataUriText(text);
@@ -1734,7 +1969,7 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
             final String html = item.getHtmlText();
             if (html != null && html.contains("data:image/")) {
-                ioExecutor.execute(new Runnable() {
+                runIoTask(new Runnable() {
                     @Override
                     public void run() {
                         Bitmap dataBmp = decodeBitmapFromDataUriText(html);
@@ -2005,19 +2240,9 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
         }
     }
 
-    private void recycleActiveHistoryThumbBitmaps() {
-        for (Bitmap bmp : activeHistoryThumbBitmaps) {
-            if (bmp != null && !bmp.isRecycled()) {
-                bmp.recycle();
-            }
-        }
-        activeHistoryThumbBitmaps.clear();
-    }
-
     private void populateHistoryItemsList() {
         if (historyItemsContainer == null) return;
         historyItemsContainer.removeAllViews();
-        recycleActiveHistoryThumbBitmaps();
 
         boolean dark = isDarkMode();
         int textPrimary = dark ? Color.WHITE : Color.parseColor("#181A1F");
@@ -2115,7 +2340,6 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
 
             Bitmap thumbBmp = ClipboardHistoryManager.loadThumbnailBitmap(this, item);
             if (thumbBmp != null) {
-                activeHistoryThumbBitmaps.add(thumbBmp);
                 thumbView.setImageBitmap(thumbBmp);
             } else {
                 thumbView.setImageResource(R.drawable.ic_drop_arrow);
@@ -2369,7 +2593,6 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void removeHistoryPopupImmediate() {
-        recycleActiveHistoryThumbBitmaps();
         safeRemoveOverlayView(historyRoot);
         historyRoot = null;
         historyCard = null;
@@ -2381,13 +2604,14 @@ public class TopBarDropService extends AccessibilityService implements FrostedGl
     }
 
     private void notifyActivityStatus() {
-        MainActivity act = MainActivity.current;
+        MainActivity act = MainActivity.getCurrent();
         if (act != null) {
             act.runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    if (MainActivity.current != null) {
-                        MainActivity.current.refreshUiState();
+                    MainActivity live = MainActivity.getCurrent();
+                    if (live != null) {
+                        live.refreshUiState();
                     }
                 }
             });

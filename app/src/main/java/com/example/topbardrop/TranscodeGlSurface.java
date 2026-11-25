@@ -104,32 +104,68 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
             throw new RuntimeException("Unable to initialize EGL14.");
         }
 
-        int[] attribList = {
-                EGL14.EGL_RED_SIZE, 8,
-                EGL14.EGL_GREEN_SIZE, 8,
-                EGL14.EGL_BLUE_SIZE, 8,
-                EGL14.EGL_ALPHA_SIZE, 8,
-                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-                EGL_RECORDABLE_ANDROID, 1,
-                EGL14.EGL_NONE
-        };
-        EGLConfig[] configs = new EGLConfig[1];
-        int[] numConfigs = new int[1];
-        if (!EGL14.eglChooseConfig(eglDisplay, attribList, 0, configs, 0, configs.length, numConfigs, 0)) {
-            throw new RuntimeException("Unable to find RGB888 recordable EGLConfig.");
+        EGLConfig chosenConfig = chooseRecordableConfig();
+        if (chosenConfig == null) {
+            throw new RuntimeException("Unable to find compatible EGLConfig for hardware video encoding.");
         }
 
         int[] contextAttribs = {
                 EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
                 EGL14.EGL_NONE
         };
-        eglContext = EGL14.eglCreateContext(eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
+        eglContext = EGL14.eglCreateContext(eglDisplay, chosenConfig, EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
+        if (eglContext == null || eglContext == EGL14.EGL_NO_CONTEXT) {
+            throw new RuntimeException("eglCreateContext failed.");
+        }
         int[] surfaceAttribs = {EGL14.EGL_NONE};
-        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, configs[0], encoderSurface, surfaceAttribs, 0);
+        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, chosenConfig, encoderSurface, surfaceAttribs, 0);
+        if (eglSurface == null || eglSurface == EGL14.EGL_NO_SURFACE) {
+            throw new RuntimeException("eglCreateWindowSurface failed.");
+        }
 
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
             throw new RuntimeException("eglMakeCurrent failed.");
         }
+    }
+
+    private EGLConfig chooseRecordableConfig() {
+        int[][] candidates = {
+                {
+                        EGL14.EGL_RED_SIZE, 8,
+                        EGL14.EGL_GREEN_SIZE, 8,
+                        EGL14.EGL_BLUE_SIZE, 8,
+                        EGL14.EGL_ALPHA_SIZE, 8,
+                        EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                        EGL_RECORDABLE_ANDROID, 1,
+                        EGL14.EGL_NONE
+                },
+                {
+                        EGL14.EGL_RED_SIZE, 8,
+                        EGL14.EGL_GREEN_SIZE, 8,
+                        EGL14.EGL_BLUE_SIZE, 8,
+                        EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                        EGL_RECORDABLE_ANDROID, 1,
+                        EGL14.EGL_NONE
+                },
+                {
+                        EGL14.EGL_RED_SIZE, 8,
+                        EGL14.EGL_GREEN_SIZE, 8,
+                        EGL14.EGL_BLUE_SIZE, 8,
+                        EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                        EGL14.EGL_NONE
+                }
+        };
+        EGLConfig[] configs = new EGLConfig[1];
+        int[] numConfigs = new int[1];
+        for (int[] attribList : candidates) {
+            numConfigs[0] = 0;
+            configs[0] = null;
+            if (EGL14.eglChooseConfig(eglDisplay, attribList, 0, configs, 0, configs.length, numConfigs, 0)
+                    && numConfigs[0] > 0 && configs[0] != null) {
+                return configs[0];
+            }
+        }
+        return null;
     }
 
     private void initGlShaderAndSurfaceTexture() {
@@ -139,6 +175,16 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
         GLES20.glAttachShader(program, vertexShader);
         GLES20.glAttachShader(program, fragmentShader);
         GLES20.glLinkProgram(program);
+        int[] linkStatus = new int[1];
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linkStatus, 0);
+        GLES20.glDeleteShader(vertexShader);
+        GLES20.glDeleteShader(fragmentShader);
+        if (linkStatus[0] != GLES20.GL_TRUE) {
+            String log = GLES20.glGetProgramInfoLog(program);
+            GLES20.glDeleteProgram(program);
+            program = 0;
+            throw new RuntimeException("Could not link GL program: " + log);
+        }
 
         aPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
         aTextureHandle = GLES20.glGetAttribLocation(program, "aTextureCoord");
@@ -166,6 +212,13 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
         int shader = GLES20.glCreateShader(shaderType);
         GLES20.glShaderSource(shader, source);
         GLES20.glCompileShader(shader);
+        int[] compiled = new int[1];
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0);
+        if (compiled[0] == 0) {
+            String log = GLES20.glGetShaderInfoLog(shader);
+            GLES20.glDeleteShader(shader);
+            throw new RuntimeException("Could not compile GL shader: " + log);
+        }
         return shader;
     }
 
@@ -181,7 +234,8 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
         }
     }
 
-    void awaitNewImageAndDraw(long presentationTimeNs) {
+    boolean awaitNewImageAndDraw(long presentationTimeNs) {
+        boolean gotFrame;
         synchronized (frameSyncObject) {
             long deadline = System.currentTimeMillis() + 2500L;
             while (!frameAvailable) {
@@ -196,7 +250,11 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
                     break;
                 }
             }
+            gotFrame = frameAvailable;
             frameAvailable = false;
+        }
+        if (!gotFrame) {
+            return false;
         }
 
         surfaceTexture.updateTexImage();
@@ -227,6 +285,7 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
 
         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, presentationTimeNs);
         EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+        return true;
     }
 
     void release() {
@@ -252,6 +311,21 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
             frameCallbackThread = null;
         }
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
+            if (eglContext != EGL14.EGL_NO_CONTEXT && eglSurface != EGL14.EGL_NO_SURFACE) {
+                try {
+                    if (EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
+                        if (textureId != 0) {
+                            GLES20.glDeleteTextures(1, new int[]{textureId}, 0);
+                            textureId = 0;
+                        }
+                        if (program != 0) {
+                            GLES20.glDeleteProgram(program);
+                            program = 0;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
             if (eglSurface != EGL14.EGL_NO_SURFACE) {
                 EGL14.eglDestroySurface(eglDisplay, eglSurface);
@@ -261,7 +335,9 @@ final class TranscodeGlSurface implements SurfaceTexture.OnFrameAvailableListene
                 EGL14.eglDestroyContext(eglDisplay, eglContext);
                 eglContext = EGL14.EGL_NO_CONTEXT;
             }
-            EGL14.eglTerminate(eglDisplay);
+            // IMPORTANT: Do NOT call EGL14.eglTerminate(EGL_DEFAULT_DISPLAY), because the default
+            // EGLDisplay is process-wide and shared with HWUI! Terminating it can crash UI rendering.
+            EGL14.eglReleaseThread();
             eglDisplay = EGL14.EGL_NO_DISPLAY;
         }
         if (encoderSurface != null) {

@@ -4,9 +4,11 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
@@ -15,10 +17,13 @@ import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Parcelable;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
 import android.widget.Button;
 
 import java.io.BufferedOutputStream;
@@ -78,6 +83,58 @@ public final class MediaToolUtils {
         ));
     }
 
+    /**
+     * Applies Android 15/16/17 edge-to-edge system bar & display cutout insets on top of a view's
+     * base padding so content is never obscured by desktop caption bars, taskbars, or cutouts.
+     */
+    public static void applySystemBarInsetsPadding(
+            View view,
+            final int baseLeft,
+            final int baseTop,
+            final int baseRight,
+            final int baseBottom
+    ) {
+        if (view == null) return;
+        view.setPadding(baseLeft, baseTop, baseRight, baseBottom);
+        view.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Insets sys = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                );
+                v.setPadding(
+                        baseLeft + sys.left,
+                        baseTop + sys.top,
+                        baseRight + sys.right,
+                        baseBottom + sys.bottom
+                );
+            } else {
+                //noinspection deprecation
+                v.setPadding(
+                        baseLeft + insets.getSystemWindowInsetLeft(),
+                        baseTop + insets.getSystemWindowInsetTop(),
+                        baseRight + insets.getSystemWindowInsetRight(),
+                        baseBottom + insets.getSystemWindowInsetBottom()
+                );
+            }
+            return insets;
+        });
+        view.requestApplyInsets();
+    }
+
+    public static <T extends Parcelable> T safeGetParcelableExtra(Intent intent, String name, Class<T> clazz) {
+        if (intent == null || name == null || clazz == null) return null;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                return intent.getParcelableExtra(name, clazz);
+            }
+            //noinspection deprecation
+            Parcelable p = intent.getParcelableExtra(name);
+            return clazz.isInstance(p) ? clazz.cast(p) : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     public static Uri extractMediaUri(Intent intent) {
         if (intent == null) return null;
         String action = intent.getAction();
@@ -85,13 +142,7 @@ public final class MediaToolUtils {
             return intent.getData();
         }
         if (Intent.ACTION_SEND.equals(action)) {
-            Uri streamUri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
-            } else {
-                //noinspection deprecation
-                streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            }
+            Uri streamUri = safeGetParcelableExtra(intent, Intent.EXTRA_STREAM, Uri.class);
             if (streamUri != null) {
                 return streamUri;
             }
@@ -134,9 +185,9 @@ public final class MediaToolUtils {
         }
 
         if (sizeBytes <= 0L) {
-            try (InputStream in = resolver.openInputStream(uri)) {
-                if (in != null) {
-                    sizeBytes = in.available();
+            try (AssetFileDescriptor afd = resolver.openAssetFileDescriptor(uri, "r")) {
+                if (afd != null && afd.getLength() > 0L) {
+                    sizeBytes = afd.getLength();
                 }
             } catch (Exception ignored) {
             }
@@ -169,6 +220,7 @@ public final class MediaToolUtils {
     /**
      * Streams output directly into MediaStore.Downloads (or legacy Downloads folder)
      * while counting the exact number of bytes written without extra memory buffers.
+     * Automatically cleans up pending/incomplete entries if writing fails or is aborted.
      */
     public static StreamSaveResult saveStreamToDownloads(
             Context context,
@@ -189,19 +241,30 @@ public final class MediaToolUtils {
                 throw new IOException("Failed to create MediaStore entry in Downloads.");
             }
             long written;
-            try (OutputStream rawOut = resolver.openOutputStream(uri)) {
-                if (rawOut == null) {
-                    throw new IOException("Failed to open Downloads output stream.");
+            try {
+                try (OutputStream rawOut = resolver.openOutputStream(uri)) {
+                    if (rawOut == null) {
+                        throw new IOException("Failed to open Downloads output stream.");
+                    }
+                    CountingOutputStream countingOut = new CountingOutputStream(new BufferedOutputStream(rawOut, 64 * 1024));
+                    writer.writeTo(countingOut);
+                    countingOut.flush();
+                    written = countingOut.getBytesWritten();
                 }
-                CountingOutputStream countingOut = new CountingOutputStream(new BufferedOutputStream(rawOut, 64 * 1024));
-                writer.writeTo(countingOut);
-                countingOut.flush();
-                written = countingOut.getBytesWritten();
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.Downloads.IS_PENDING, 0);
+                resolver.update(uri, done, null, null);
+                return new StreamSaveResult(uri, written);
+            } catch (Throwable t) {
+                try {
+                    resolver.delete(uri, null, null);
+                } catch (Exception ignored) {
+                }
+                if (t instanceof IOException) throw (IOException) t;
+                if (t instanceof RuntimeException) throw (RuntimeException) t;
+                if (t instanceof Error) throw (Error) t;
+                throw new IOException(t);
             }
-            ContentValues done = new ContentValues();
-            done.put(MediaStore.Downloads.IS_PENDING, 0);
-            resolver.update(uri, done, null, null);
-            return new StreamSaveResult(uri, written);
         } else {
             File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!downloadsDir.exists()) {
@@ -210,13 +273,24 @@ public final class MediaToolUtils {
             }
             File target = new File(downloadsDir, outFileName);
             long written;
-            try (OutputStream rawOut = new FileOutputStream(target)) {
-                CountingOutputStream countingOut = new CountingOutputStream(new BufferedOutputStream(rawOut, 64 * 1024));
-                writer.writeTo(countingOut);
-                countingOut.flush();
-                written = countingOut.getBytesWritten();
+            try {
+                try (OutputStream rawOut = new FileOutputStream(target)) {
+                    CountingOutputStream countingOut = new CountingOutputStream(new BufferedOutputStream(rawOut, 64 * 1024));
+                    writer.writeTo(countingOut);
+                    countingOut.flush();
+                    written = countingOut.getBytesWritten();
+                }
+                return new StreamSaveResult(Uri.fromFile(target), written);
+            } catch (Throwable t) {
+                if (target.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    target.delete();
+                }
+                if (t instanceof IOException) throw (IOException) t;
+                if (t instanceof RuntimeException) throw (RuntimeException) t;
+                if (t instanceof Error) throw (Error) t;
+                throw new IOException(t);
             }
-            return new StreamSaveResult(Uri.fromFile(target), written);
         }
     }
 

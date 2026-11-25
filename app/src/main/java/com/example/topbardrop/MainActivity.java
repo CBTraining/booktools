@@ -35,11 +35,20 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.util.List;
 
 public class MainActivity extends Activity {
 
-    public static volatile MainActivity current;
+    private static volatile WeakReference<MainActivity> currentRef = new WeakReference<>(null);
+
+    public static MainActivity getCurrent() {
+        MainActivity act = currentRef.get();
+        if (act == null || act.isFinishing() || act.isDestroyed()) {
+            return null;
+        }
+        return act;
+    }
 
     private TextView statusBanner;
     private TextView updateStatusView;
@@ -51,7 +60,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        current = this;
+        currentRef = new WeakReference<>(this);
         buildThemedContentView();
         triggerAutoUpdateCheck(false);
     }
@@ -63,8 +72,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean isDarkMode() {
-        int nightMask = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return nightMask == Configuration.UI_MODE_NIGHT_YES;
+        return MediaToolUtils.isDarkMode(this);
     }
 
     private void buildThemedContentView() {
@@ -83,7 +91,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dpToPx(22f);
-        root.setPadding(pad, dpToPx(18f), pad, pad);
+        MediaToolUtils.applySystemBarInsetsPadding(root, pad, dpToPx(18f), pad, pad);
         scrollView.addView(root);
 
         // --- Header Row with Icon, Title, Version Badge, Author Credit, and Update Controls ---
@@ -489,15 +497,16 @@ public class MainActivity extends Activity {
     }
 
     public Bitmap captureActivityWindowBitmap() {
+        if (isFinishing() || isDestroyed()) return null;
         try {
-            View root = getWindow().getDecorView().getRootView();
+            View root = getWindow() != null ? getWindow().getDecorView().getRootView() : null;
             if (root != null && root.getWidth() > 0 && root.getHeight() > 0) {
                 Bitmap b = Bitmap.createBitmap(root.getWidth(), root.getHeight(), Bitmap.Config.ARGB_8888);
                 Canvas c = new Canvas(b);
                 root.draw(c);
                 return b;
             }
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
         }
         return null;
     }
@@ -666,7 +675,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        current = this;
+        currentRef = new WeakReference<>(this);
         refreshUiState();
         if (AutoUpdater.pendingInstallApkFile != null && AutoUpdater.pendingInstallApkFile.exists()) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
@@ -687,14 +696,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (current == this) {
-            current = null;
+        if (currentRef.get() == this) {
+            currentRef = new WeakReference<>(null);
         }
         super.onDestroy();
     }
 
     public void refreshUiState() {
-        if (statusBanner == null || lastActionView == null) return;
+        if (isFinishing() || isDestroyed() || statusBanner == null || lastActionView == null) return;
         boolean active = isAccessibilityServiceEnabled();
         boolean dark = isDarkMode();
         GradientDrawable bg = new GradientDrawable();
@@ -728,7 +737,9 @@ public class MainActivity extends Activity {
                 + " · Local History: " + localCount + "/" + ClipboardHistoryManager.MAX_HISTORY_ITEMS + " items");
     }
 
+    @SuppressWarnings("deprecation")
     private void copySampleWebpToClipboard() {
+        Bitmap bmp = null;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ContentValues values = new ContentValues();
@@ -738,7 +749,7 @@ public class MainActivity extends Activity {
 
                 Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
                 if (uri != null) {
-                    Bitmap bmp = Bitmap.createBitmap(480, 280, Bitmap.Config.ARGB_8888);
+                    bmp = Bitmap.createBitmap(480, 280, Bitmap.Config.ARGB_8888);
                     Canvas canvas = new Canvas(bmp);
                     Paint bgPaint = new Paint();
                     bgPaint.setShader(new LinearGradient(0, 0, 480, 280,
@@ -754,7 +765,12 @@ public class MainActivity extends Activity {
                     canvas.drawText("Press Ctrl + Shift + D!", 125f, 175f, textPaint);
 
                     try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-                        bmp.compress(Bitmap.CompressFormat.WEBP, 90, out);
+                        if (out != null) {
+                            Bitmap.CompressFormat fmt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                                    ? Bitmap.CompressFormat.WEBP_LOSSY
+                                    : Bitmap.CompressFormat.WEBP;
+                            bmp.compress(fmt, 90, out);
+                        }
                     }
 
                     ClipboardManager cm = getSystemService(ClipboardManager.class);
@@ -767,6 +783,10 @@ public class MainActivity extends Activity {
             }
         } catch (Exception e) {
             Toast.makeText(this, "Error creating sample WebP: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        } finally {
+            if (bmp != null && !bmp.isRecycled()) {
+                bmp.recycle();
+            }
         }
     }
 

@@ -13,6 +13,7 @@ import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -25,6 +26,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.Locale;
@@ -38,7 +40,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class VideoToGifActivity extends Activity {
 
-    private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
+    private AtomicBoolean activeCancelFlag = new AtomicBoolean(false);
+    private int intentGeneration = 0;
     private boolean isEncoding = false;
     private boolean isFinished = false;
 
@@ -76,22 +79,30 @@ public class VideoToGifActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        cancelFlag.set(true);
+        cancelActiveJob();
         buildUi();
         handleIncomingIntent(intent);
     }
 
     @Override
     protected void onDestroy() {
-        cancelFlag.set(true);
+        cancelActiveJob();
         VideoToGifConverter.releasePreviewRetriever();
-        if (currentPreviewBitmap != null && !currentPreviewBitmap.isRecycled()) {
-            currentPreviewBitmap.recycle();
-            currentPreviewBitmap = null;
+        if (framePreviewView != null) {
+            framePreviewView.setImageDrawable(null);
         }
+        currentPreviewBitmap = null;
         super.onDestroy();
     }
 
+    private void cancelActiveJob() {
+        intentGeneration++;
+        if (activeCancelFlag != null) {
+            activeCancelFlag.set(true);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
     private void buildUi() {
         boolean dark = MediaToolUtils.isDarkMode(this);
 
@@ -103,15 +114,19 @@ public class VideoToGifActivity extends Activity {
         int accentTeal = dark ? Color.parseColor("#2DD4BF") : Color.parseColor("#0D9488");
 
         Window window = getWindow();
-        if (window != null) {
+        if (window != null && Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             window.setStatusBarColor(bgColor);
             window.setNavigationBarColor(bgColor);
         }
 
+        ScrollView scrollRoot = new ScrollView(this);
+        scrollRoot.setFillViewport(true);
+        scrollRoot.setBackgroundColor(bgColor);
+
         FrameLayout outerRoot = new FrameLayout(this);
         outerRoot.setBackgroundColor(bgColor);
         int outerPad = dp(16f);
-        outerRoot.setPadding(outerPad, outerPad, outerPad, outerPad);
+        MediaToolUtils.applySystemBarInsetsPadding(outerRoot, outerPad, outerPad, outerPad, outerPad);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -161,7 +176,7 @@ public class VideoToGifActivity extends Activity {
         closeX.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
         closeX.setPadding(dp(10f), dp(4f), dp(4f), dp(4f));
         closeX.setOnClickListener(v -> {
-            cancelFlag.set(true);
+            cancelActiveJob();
             finish();
         });
         headerRow.addView(closeX);
@@ -286,7 +301,7 @@ public class VideoToGifActivity extends Activity {
         card.addView(progressBar, progLp);
 
         statusTextView = new TextView(this);
-        statusTextView.setText("Select your Start & End times above, then click 'Create GIF (<50mb)'.");
+        statusTextView.setText("Loading video metadata...");
         statusTextView.setTextColor(textSecondary);
         statusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         statusTextView.setPadding(0, dp(8f), 0, 0);
@@ -313,7 +328,7 @@ public class VideoToGifActivity extends Activity {
 
         cancelOrCloseBtn = MediaToolUtils.createFlatButton(this, dark, "Cancel", false);
         cancelOrCloseBtn.setOnClickListener(v -> {
-            cancelFlag.set(true);
+            cancelActiveJob();
             finish();
         });
         btnRow.addView(cancelOrCloseBtn, new LinearLayout.LayoutParams(
@@ -329,8 +344,9 @@ public class VideoToGifActivity extends Activity {
                 Gravity.CENTER
         );
         outerRoot.addView(card, cardLp);
+        scrollRoot.addView(outerRoot);
 
-        setContentView(outerRoot);
+        setContentView(scrollRoot);
     }
 
     private void handleIncomingIntent(Intent intent) {
@@ -343,22 +359,35 @@ public class VideoToGifActivity extends Activity {
             return;
         }
 
-        cancelFlag.set(false);
+        final int gen = ++intentGeneration;
+        activeCancelFlag = new AtomicBoolean(false);
         isEncoding = false;
         isFinished = false;
+        videoInfo = null;
+        createGifBtn.setEnabled(false);
+        createGifBtn.setAlpha(0.5f);
+        fileTitleView.setText("Inspecting video...");
+        statusTextView.setText("Reading video duration and preview frame...");
 
-        videoInfo = VideoCompressor.inspectVideo(this, sourceVideoUri);
-        totalDurationMs = Math.max(500L, videoInfo.durationMs);
-        startMs = 0L;
-        endMs = Math.min(totalDurationMs, 8_000L);
-        if (endMs <= startMs) {
-            endMs = totalDurationMs;
-        }
+        final Uri targetUri = sourceVideoUri;
+        VideoToGifConverter.inspectVideoAsync(this, targetUri, info -> {
+            if (isFinishing() || isDestroyed() || gen != intentGeneration) return;
+            videoInfo = info;
+            totalDurationMs = Math.max(500L, info.durationMs);
+            startMs = 0L;
+            endMs = Math.min(totalDurationMs, 8_000L);
+            if (endMs <= startMs) {
+                endMs = totalDurationMs;
+            }
 
-        fileTitleView.setText(videoInfo.displayName + " (" + formatTimeMs(totalDurationMs) + ")");
-        updateTrimLabels();
-        trimRangeBar.invalidate();
-        requestPreviewFrame(startMs, true);
+            fileTitleView.setText(info.displayName + " (" + formatTimeMs(totalDurationMs) + ")");
+            statusTextView.setText("Select your Start & End times above, then click 'Create GIF (<50mb)'.");
+            createGifBtn.setEnabled(true);
+            createGifBtn.setAlpha(1.0f);
+            updateTrimLabels();
+            trimRangeBar.invalidate();
+            requestPreviewFrame(startMs, true);
+        });
     }
 
     private void updateTrimLabels() {
@@ -377,14 +406,12 @@ public class VideoToGifActivity extends Activity {
         lastPreviewRequestTimeMs = now;
         previewTimestampBadge.setText("Preview: " + formatTimeMs(timeMs));
 
+        final int gen = intentGeneration;
         VideoToGifConverter.loadPreviewFrameAsync(this, sourceVideoUri, timeMs, bitmap -> {
-            if (bitmap != null && !isFinishing()) {
-                Bitmap old = currentPreviewBitmap;
+            if (bitmap != null && !isFinishing() && !isDestroyed() && gen == intentGeneration) {
+                // Do not manually recycle old bitmap while HWUI RenderThread may still draw it
                 currentPreviewBitmap = bitmap;
                 framePreviewView.setImageBitmap(bitmap);
-                if (old != null && old != bitmap && !old.isRecycled()) {
-                    old.recycle();
-                }
             }
         });
     }
@@ -395,7 +422,10 @@ public class VideoToGifActivity extends Activity {
         }
         isEncoding = true;
         isFinished = false;
-        cancelFlag.set(false);
+        final int gen = intentGeneration;
+        final AtomicBoolean runCancel = new AtomicBoolean(false);
+        activeCancelFlag = runCancel;
+
         createGifBtn.setEnabled(false);
         createGifBtn.setAlpha(0.5f);
         progressBar.setProgress(2);
@@ -407,16 +437,18 @@ public class VideoToGifActivity extends Activity {
                 videoInfo,
                 startMs,
                 endMs,
-                cancelFlag,
+                runCancel,
                 new VideoToGifConverter.GifCallback() {
                     @Override
                     public void onProgress(int percent, String statusText) {
+                        if (isFinishing() || isDestroyed() || gen != intentGeneration) return;
                         progressBar.setProgress(percent);
                         statusTextView.setText(statusText);
                     }
 
                     @Override
                     public void onSuccess(VideoToGifConverter.GifResult result) {
+                        if (isFinishing() || isDestroyed() || gen != intentGeneration) return;
                         isEncoding = false;
                         isFinished = true;
                         boolean dark = MediaToolUtils.isDarkMode(VideoToGifActivity.this);
@@ -438,8 +470,9 @@ public class VideoToGifActivity extends Activity {
 
                     @Override
                     public void onError(String errorMessage) {
+                        if (isFinishing() || isDestroyed() || gen != intentGeneration) return;
                         isEncoding = false;
-                        if (cancelFlag.get()) {
+                        if (runCancel.get()) {
                             return;
                         }
                         createGifBtn.setEnabled(true);
@@ -469,6 +502,15 @@ public class VideoToGifActivity extends Activity {
         private static final int DRAG_NONE = 0;
         private static final int DRAG_START = 1;
         private static final int DRAG_END = 2;
+
+        private final int[] gradientColors = new int[]{
+                Color.parseColor("#A3E635"),
+                Color.parseColor("#2DD4BF"),
+                Color.parseColor("#0D9488")
+        };
+        private final float[] gradientPositions = new float[]{0f, 0.5f, 1f};
+        private float lastGradStartX = Float.NaN;
+        private float lastGradEndX = Float.NaN;
 
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint activeRangePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -507,16 +549,17 @@ public class VideoToGifActivity extends Activity {
             float startX = padH + startFrac * usableW;
             float endX = padH + endFrac * usableW;
 
-            activeRangePaint.setShader(new LinearGradient(
-                    startX, cy, endX, cy,
-                    new int[]{
-                            Color.parseColor("#A3E635"),
-                            Color.parseColor("#2DD4BF"),
-                            Color.parseColor("#0D9488")
-                    },
-                    new float[]{0f, 0.5f, 1f},
-                    Shader.TileMode.CLAMP
-            ));
+            if (startX != lastGradStartX || endX != lastGradEndX) {
+                lastGradStartX = startX;
+                lastGradEndX = endX;
+                float safeEndX = (endX > startX) ? endX : (startX + 1f);
+                activeRangePaint.setShader(new LinearGradient(
+                        startX, cy, safeEndX, cy,
+                        gradientColors,
+                        gradientPositions,
+                        Shader.TileMode.CLAMP
+                ));
+            }
             rectF.set(startX, cy - trackHalfH, endX, cy + trackHalfH);
             canvas.drawRoundRect(rectF, trackHalfH, trackHalfH, activeRangePaint);
 
@@ -532,7 +575,7 @@ public class VideoToGifActivity extends Activity {
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            if (isEncoding || isFinished || totalDurationMs <= 0) {
+            if (isEncoding || isFinished || totalDurationMs <= 0 || videoInfo == null) {
                 return false;
             }
             int w = getWidth();

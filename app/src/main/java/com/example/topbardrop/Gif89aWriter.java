@@ -24,7 +24,11 @@ final class Gif89aWriter {
     private final int[] sortCounts = new int[32];
     private final int[] sortOffsets = new int[32];
     private final int[] sortScratch = new int[32768];
-    private final int[] lzwTable = new int[4096 * 256];
+    // Compact 8192-slot open-addressing LZW hash table (48 KB instead of 4 MB) fits in L1/L2 cache
+    private static final int HASH_SIZE = 8192;
+    private static final int HASH_MASK = HASH_SIZE - 1;
+    private final int[] lzwKeys = new int[HASH_SIZE];
+    private final short[] lzwCodes = new short[HASH_SIZE];
     private final byte[] subBlock = new byte[256];
 
     Gif89aWriter(OutputStream out, int width, int height) {
@@ -249,7 +253,7 @@ final class Gif89aWriter {
         int maxCodeForSize = (1 << codeSize) - 1;
         int nextAvailableCode = clearCode + 2;
 
-        Arrays.fill(lzwTable, -1);
+        Arrays.fill(lzwKeys, -1);
 
         int bitAccumulator = 0;
         int bitCount = 0;
@@ -268,35 +272,29 @@ final class Gif89aWriter {
             bitCount -= 8;
         }
 
-        int prefix = pixels[0] & 0xFF;
-        for (int i = 1; i < pixels.length; i++) {
-            int k = pixels[i] & 0xFF;
-            int tableIdx = (prefix << 8) | k;
-            int existingCode = lzwTable[tableIdx];
-            if (existingCode != -1) {
-                prefix = existingCode;
-            } else {
-                bitAccumulator |= (prefix << bitCount);
-                bitCount += codeSize;
-                while (bitCount >= 8) {
-                    subBlock[subBlockLen++] = (byte) (bitAccumulator & 0xFF);
-                    if (subBlockLen == 255) {
-                        out.write(255);
-                        out.write(subBlock, 0, 255);
-                        subBlockLen = 0;
+        if (pixels.length > 0) {
+            int prefix = pixels[0] & 0xFF;
+            for (int i = 1; i < pixels.length; i++) {
+                int k = pixels[i] & 0xFF;
+                int key = (prefix << 8) | k;
+                int slot = ((key * 0x9E3779B1) >>> 19) & HASH_MASK;
+                int existingCode = -1;
+                while (true) {
+                    int storedKey = lzwKeys[slot];
+                    if (storedKey == -1) {
+                        break;
                     }
-                    bitAccumulator >>>= 8;
-                    bitCount -= 8;
+                    if (storedKey == key) {
+                        existingCode = lzwCodes[slot] & 0xFFFF;
+                        break;
+                    }
+                    slot = (slot + 1) & HASH_MASK;
                 }
 
-                if (nextAvailableCode < 4096) {
-                    lzwTable[tableIdx] = nextAvailableCode++;
-                    if (nextAvailableCode > maxCodeForSize && codeSize < 12) {
-                        codeSize++;
-                        maxCodeForSize = (1 << codeSize) - 1;
-                    }
+                if (existingCode != -1) {
+                    prefix = existingCode;
                 } else {
-                    bitAccumulator |= (clearCode << bitCount);
+                    bitAccumulator |= (prefix << bitCount);
                     bitCount += codeSize;
                     while (bitCount >= 8) {
                         subBlock[subBlockLen++] = (byte) (bitAccumulator & 0xFF);
@@ -308,26 +306,50 @@ final class Gif89aWriter {
                         bitAccumulator >>>= 8;
                         bitCount -= 8;
                     }
-                    Arrays.fill(lzwTable, -1);
-                    codeSize = minCodeSize + 1;
-                    maxCodeForSize = (1 << codeSize) - 1;
-                    nextAvailableCode = clearCode + 2;
-                }
-                prefix = k;
-            }
-        }
 
-        bitAccumulator |= (prefix << bitCount);
-        bitCount += codeSize;
-        while (bitCount >= 8) {
-            subBlock[subBlockLen++] = (byte) (bitAccumulator & 0xFF);
-            if (subBlockLen == 255) {
-                out.write(255);
-                out.write(subBlock, 0, 255);
-                subBlockLen = 0;
+                    // Bump codeSize only AFTER emitting the code at maxCodeForSize + 1 (matches GIF89a decoder spec)
+                    if (nextAvailableCode > maxCodeForSize && codeSize < 12) {
+                        codeSize++;
+                        maxCodeForSize = (1 << codeSize) - 1;
+                    }
+
+                    if (nextAvailableCode < 4096) {
+                        lzwKeys[slot] = key;
+                        lzwCodes[slot] = (short) nextAvailableCode++;
+                    } else {
+                        bitAccumulator |= (clearCode << bitCount);
+                        bitCount += codeSize;
+                        while (bitCount >= 8) {
+                            subBlock[subBlockLen++] = (byte) (bitAccumulator & 0xFF);
+                            if (subBlockLen == 255) {
+                                out.write(255);
+                                out.write(subBlock, 0, 255);
+                                subBlockLen = 0;
+                            }
+                            bitAccumulator >>>= 8;
+                            bitCount -= 8;
+                        }
+                        Arrays.fill(lzwKeys, -1);
+                        codeSize = minCodeSize + 1;
+                        maxCodeForSize = (1 << codeSize) - 1;
+                        nextAvailableCode = clearCode + 2;
+                    }
+                    prefix = k;
+                }
             }
-            bitAccumulator >>>= 8;
-            bitCount -= 8;
+
+            bitAccumulator |= (prefix << bitCount);
+            bitCount += codeSize;
+            while (bitCount >= 8) {
+                subBlock[subBlockLen++] = (byte) (bitAccumulator & 0xFF);
+                if (subBlockLen == 255) {
+                    out.write(255);
+                    out.write(subBlock, 0, 255);
+                    subBlockLen = 0;
+                }
+                bitAccumulator >>>= 8;
+                bitCount -= 8;
+            }
         }
 
         bitAccumulator |= (endOfInfoCode << bitCount);

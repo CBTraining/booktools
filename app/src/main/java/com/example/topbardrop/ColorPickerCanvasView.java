@@ -60,6 +60,8 @@ final class ColorPickerCanvasView extends View {
     private final Paint centerOuterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint centerInnerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF tempRect = new RectF();
+    private final RectF pillBounds = new RectF();
+    private final RectF cardBounds = new RectF();
     private final Rect fullDestRect = new Rect();
     private final Path clipPath = new Path();
 
@@ -198,13 +200,31 @@ final class ColorPickerCanvasView extends View {
         }
     }
 
-    private void drawFrostedGlassCard(Canvas canvas, RectF bounds, float radius, int screenW, int screenH) {
+    private int mapPointerXToBitmap(int viewW) {
+        int bmpW = screenBmp.getWidth();
+        if (bmpW <= 1) return 0;
+        if (viewW <= 0 || viewW == bmpW) {
+            return clamp(Math.round(pointerX), 0, bmpW - 1);
+        }
+        return clamp(Math.round((pointerX * bmpW) / (float) viewW), 0, bmpW - 1);
+    }
+
+    private int mapPointerYToBitmap(int viewH) {
+        int bmpH = screenBmp.getHeight();
+        if (bmpH <= 1) return 0;
+        if (viewH <= 0 || viewH == bmpH) {
+            return clamp(Math.round(pointerY), 0, bmpH - 1);
+        }
+        return clamp(Math.round((pointerY * bmpH) / (float) viewH), 0, bmpH - 1);
+    }
+
+    private void drawFrostedGlassCard(Canvas canvas, RectF bounds, float radius, int viewW, int viewH) {
         canvas.save();
         clipPath.reset();
         clipPath.addRoundRect(bounds, radius, radius, Path.Direction.CW);
         canvas.clipPath(clipPath);
         if (blurredBmp != null && !blurredBmp.isRecycled()) {
-            fullDestRect.set(0, 0, screenW, screenH);
+            fullDestRect.set(0, 0, viewW, viewH);
             canvas.drawBitmap(blurredBmp, null, fullDestRect, bmpPaint);
         }
         canvas.drawRect(bounds, glassTintPaint);
@@ -216,22 +236,24 @@ final class ColorPickerCanvasView extends View {
         super.onDraw(canvas);
         int viewW = getWidth();
         int viewH = getHeight();
-        if (viewW <= 0 || viewH <= 0 || screenBmp == null || screenBmp.isRecycled()) {
+        if (viewW <= 0 || viewH <= 0 || screenBmp == null || screenBmp.isRecycled()
+                || screenBmp.getWidth() <= 0 || screenBmp.getHeight() <= 0) {
             return;
         }
 
         int alphaInt = clamp(Math.round(Math.min(1f, Math.max(0f, animProgress)) * 255f), 0, 255);
         bmpPaint.setAlpha(alphaInt);
-        // Draw the unblurred screen snapshot so the rest of the screen stays 100% sharp!
-        canvas.drawBitmap(screenBmp, 0f, 0f, bmpPaint);
+        // Draw the unblurred screen snapshot fitted to the overlay bounds so multi-display / DPI scaling stays exact
+        fullDestRect.set(0, 0, viewW, viewH);
+        canvas.drawBitmap(screenBmp, null, fullDestRect, bmpPaint);
 
         if (pointerX < 0f || pointerY < 0f) {
             pointerX = viewW / 2f;
             pointerY = viewH / 2f;
         }
 
-        int bmpX = clamp(Math.round(pointerX), 0, screenBmp.getWidth() - 1);
-        int bmpY = clamp(Math.round(pointerY), 0, screenBmp.getHeight() - 1);
+        int bmpX = mapPointerXToBitmap(viewW);
+        int bmpY = mapPointerYToBitmap(viewH);
         int centerColor = screenBmp.getPixel(bmpX, bmpY);
         String hex = String.format(Locale.US, "#%06X", (0xFFFFFF & centerColor));
         int r = Color.red(centerColor);
@@ -248,10 +270,10 @@ final class ColorPickerCanvasView extends View {
         float pillHeight = dp(36f);
         float pillLeft = (viewW - pillWidth) / 2f;
         float pillTop = dp(50f);
-        RectF pillBounds = new RectF(pillLeft, pillTop, pillLeft + pillWidth, pillTop + pillHeight);
+        pillBounds.set(pillLeft, pillTop, pillLeft + pillWidth, pillTop + pillHeight);
         canvas.save();
         canvas.scale(scale, scale, viewW / 2f, pillTop + pillHeight / 2f);
-        drawFrostedGlassCard(canvas, pillBounds, dp(18f), screenBmp.getWidth(), screenBmp.getHeight());
+        drawFrostedGlassCard(canvas, pillBounds, dp(18f), viewW, viewH);
         canvas.drawText(topMsg, viewW / 2f, pillTop + dp(23f), bannerTextPaint);
         canvas.restore();
 
@@ -299,8 +321,8 @@ final class ColorPickerCanvasView extends View {
         canvas.save();
         canvas.scale(scale, scale, pointerX, pointerY);
 
-        RectF cardBounds = new RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
-        drawFrostedGlassCard(canvas, cardBounds, dp(18f), screenBmp.getWidth(), screenBmp.getHeight());
+        cardBounds.set(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
+        drawFrostedGlassCard(canvas, cardBounds, dp(18f), viewW, viewH);
 
         // Draw Magnified 11x11 Pixel Grid inside rounded clip
         float gridLeft = cardLeft + pad;
@@ -312,11 +334,14 @@ final class ColorPickerCanvasView extends View {
         clipPath.addRoundRect(tempRect, dp(10f), dp(10f), Path.Direction.CW);
         canvas.clipPath(clipPath);
 
+        pixelPaint.setAntiAlias(false);
+        int maxBmpX = screenBmp.getWidth() - 1;
+        int maxBmpY = screenBmp.getHeight() - 1;
         for (int dy = -gridRadius; dy <= gridRadius; dy++) {
-            int sy = clamp(bmpY + dy, 0, screenBmp.getHeight() - 1);
+            int sy = clamp(bmpY + dy, 0, maxBmpY);
             float py = gridTop + (dy + gridRadius) * cellPx;
             for (int dx = -gridRadius; dx <= gridRadius; dx++) {
-                int sx = clamp(bmpX + dx, 0, screenBmp.getWidth() - 1);
+                int sx = clamp(bmpX + dx, 0, maxBmpX);
                 float px = gridLeft + (dx + gridRadius) * cellPx;
                 pixelPaint.setColor(screenBmp.getPixel(sx, sy));
                 canvas.drawRect(px, py, px + cellPx + 0.5f, py + cellPx + 0.5f, pixelPaint);
@@ -396,14 +421,15 @@ final class ColorPickerCanvasView extends View {
     }
 
     void pickCurrentColorAndClose() {
-        if (screenBmp == null || screenBmp.isRecycled()) {
+        if (screenBmp == null || screenBmp.isRecycled()
+                || screenBmp.getWidth() <= 0 || screenBmp.getHeight() <= 0) {
             if (listener != null) {
                 listener.onCancelRequested();
             }
             return;
         }
-        int bmpX = clamp(Math.round(pointerX), 0, screenBmp.getWidth() - 1);
-        int bmpY = clamp(Math.round(pointerY), 0, screenBmp.getHeight() - 1);
+        int bmpX = mapPointerXToBitmap(getWidth());
+        int bmpY = mapPointerYToBitmap(getHeight());
         int pickedColor = screenBmp.getPixel(bmpX, bmpY);
         String hex = String.format(Locale.US, "#%06X", (0xFFFFFF & pickedColor));
 

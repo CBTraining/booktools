@@ -217,8 +217,10 @@ public final class VideoCompressor {
                         outH
                 );
                 mainHandler.post(() -> callback.onSuccess(result));
-            } catch (Exception e) {
-                final String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            } catch (Throwable e) {
+                final String msg = (e instanceof OutOfMemoryError)
+                        ? "Video is too large for available memory."
+                        : (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 mainHandler.post(() -> callback.onError(msg));
             } finally {
                 if (tempOutput.exists()) {
@@ -231,6 +233,44 @@ public final class VideoCompressor {
 
     private interface InternalProgressListener {
         void onProgress(int percent, String statusText);
+    }
+
+    private static MediaCodec createConfiguredAvcEncoder(MediaFormat outputVideoFormat) throws IOException {
+        try {
+            MediaCodec hw = MediaCodec.createEncoderByType(MIME_VIDEO_AVC);
+            try {
+                hw.configure(outputVideoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                return hw;
+            } catch (Exception hwErr) {
+                try {
+                    hw.release();
+                } catch (Exception ignored) {
+                }
+                // Fallback to Android's software AVC encoder if hardware encoder rejects dimensions/profile
+                String[] swNames = {"c2.android.avc.encoder", "OMX.google.h264.encoder"};
+                for (String name : swNames) {
+                    MediaCodec sw = null;
+                    try {
+                        sw = MediaCodec.createByCodecName(name);
+                        sw.configure(outputVideoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                        return sw;
+                    } catch (Exception ignored) {
+                        if (sw != null) {
+                            try {
+                                sw.release();
+                            } catch (Exception ignored2) {
+                            }
+                        }
+                    }
+                }
+                if (hwErr instanceof IOException) throw (IOException) hwErr;
+                throw new IOException("Hardware video encoder configuration failed: " + hwErr.getMessage(), hwErr);
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Could not initialize H.264 encoder: " + e.getMessage(), e);
+        }
     }
 
     private static void transcodeToTempFile(
@@ -250,6 +290,7 @@ public final class VideoCompressor {
         MediaCodec encoder = null;
         MediaMuxer muxer = null;
         TranscodeGlSurface glSurface = null;
+        boolean muxerStarted = false;
 
         try {
             videoExtractor.setDataSource(context, sourceUri, null);
@@ -284,12 +325,15 @@ public final class VideoCompressor {
             int frameRate = 30;
             if (inputVideoFormat.containsKey(MediaFormat.KEY_FRAME_RATE)) {
                 try {
-                    frameRate = Math.max(15, Math.min(60, inputVideoFormat.getInteger(MediaFormat.KEY_FRAME_RATE)));
+                    Number fpsNum = inputVideoFormat.getNumber(MediaFormat.KEY_FRAME_RATE);
+                    if (fpsNum != null) {
+                        frameRate = Math.max(15, Math.min(60, Math.round(fpsNum.floatValue())));
+                    }
                 } catch (Exception ignored) {
                 }
             }
 
-            // Configure H.264 hardware encoder
+            // Configure H.264 encoder (hardware preferred, automatic software fallback if rejected)
             MediaFormat outputVideoFormat = MediaFormat.createVideoFormat(MIME_VIDEO_AVC, outWidth, outHeight);
             outputVideoFormat.setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
@@ -299,8 +343,7 @@ public final class VideoCompressor {
             outputVideoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate);
             outputVideoFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
 
-            encoder = MediaCodec.createEncoderByType(MIME_VIDEO_AVC);
-            encoder.configure(outputVideoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoder = createConfiguredAvcEncoder(outputVideoFormat);
             Surface encoderInputSurface = encoder.createInputSurface();
 
             // Initialize single-context EGL + GLES20 bridge from Decoder SurfaceTexture -> Encoder Surface
@@ -324,9 +367,10 @@ public final class VideoCompressor {
             boolean extractorDone = false;
             boolean decoderDone = false;
             boolean encoderDone = false;
-            boolean muxerStarted = false;
             int muxerVideoTrack = -1;
             int muxerAudioTrack = -1;
+            long lastVideoPtsUs = -1L;
+            long decoderDoneAtMs = 0L;
 
             long durationUs = Math.max(1_000L, info.durationMs * 1000L);
             int lastReportedPct = -1;
@@ -344,7 +388,7 @@ public final class VideoCompressor {
                             );
                             extractorDone = true;
                         } else {
-                            long presentationTimeUs = videoExtractor.getSampleTime();
+                            long presentationTimeUs = Math.max(0L, videoExtractor.getSampleTime());
                             decoder.queueInputBuffer(
                                     inputBufIndex, 0, sampleSize, presentationTimeUs, 0
                             );
@@ -365,11 +409,12 @@ public final class VideoCompressor {
                         boolean doRender = (bufferInfo.size != 0);
                         decoder.releaseOutputBuffer(outStatus, doRender);
                         if (doRender) {
-                            glSurface.awaitNewImageAndDraw(bufferInfo.presentationTimeUs * 1000L);
+                            glSurface.awaitNewImageAndDraw(Math.max(0L, bufferInfo.presentationTimeUs) * 1000L);
                         }
                         if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             encoder.signalEndOfInputStream();
                             decoderDone = true;
+                            decoderDoneAtMs = System.currentTimeMillis();
                             decoderOutputAvailable = false;
                         }
                     }
@@ -403,6 +448,12 @@ public final class VideoCompressor {
                             bufferInfo.size = 0;
                         }
                         if (bufferInfo.size > 0 && muxerStarted && encodedData != null) {
+                            // Clamp PTS monotonically so reordered/duplicate timestamps never crash MediaMuxer
+                            if (bufferInfo.presentationTimeUs <= lastVideoPtsUs) {
+                                bufferInfo.presentationTimeUs = lastVideoPtsUs + 1L;
+                            }
+                            lastVideoPtsUs = bufferInfo.presentationTimeUs;
+
                             encodedData.position(bufferInfo.offset);
                             encodedData.limit(bufferInfo.offset + bufferInfo.size);
                             muxer.writeSampleData(muxerVideoTrack, encodedData, bufferInfo);
@@ -420,13 +471,27 @@ public final class VideoCompressor {
                         }
                     }
                 }
+
+                // Safety guard: if decoder finished EOS but encoder stalls for > 5 seconds, finish cleanly
+                if (decoderDone && !encoderDone && decoderDoneAtMs > 0L
+                        && (System.currentTimeMillis() - decoderDoneAtMs) > 5_000L) {
+                    encoderDone = true;
+                }
             }
 
             // 4. Copy passthrough audio packets if present
             if (!cancelFlag.get() && muxerStarted && muxerAudioTrack >= 0) {
                 progressListener.onProgress(96, "Muxing audio track... 96%");
-                ByteBuffer audioBuf = ByteBuffer.allocateDirect(256 * 1024);
+                int audioBufSize = 256 * 1024;
+                if (inputAudioFormat != null && inputAudioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                    try {
+                        audioBufSize = Math.max(audioBufSize, inputAudioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+                    } catch (Exception ignored) {
+                    }
+                }
+                ByteBuffer audioBuf = ByteBuffer.allocateDirect(audioBufSize);
                 MediaCodec.BufferInfo audioInfo = new MediaCodec.BufferInfo();
+                long lastAudioPtsUs = -1L;
                 while (!cancelFlag.get()) {
                     int sampleSize = audioExtractor.readSampleData(audioBuf, 0);
                     if (sampleSize < 0) {
@@ -436,9 +501,15 @@ public final class VideoCompressor {
                     if (sampleTimeUs > durationUs + 500_000L) {
                         break;
                     }
+                    long clampedPts = Math.max(0L, sampleTimeUs);
+                    if (clampedPts <= lastAudioPtsUs) {
+                        clampedPts = lastAudioPtsUs + 1L;
+                    }
+                    lastAudioPtsUs = clampedPts;
+
                     audioInfo.offset = 0;
                     audioInfo.size = sampleSize;
-                    audioInfo.presentationTimeUs = Math.max(0L, sampleTimeUs);
+                    audioInfo.presentationTimeUs = clampedPts;
                     int sampleFlags = audioExtractor.getSampleFlags();
                     audioInfo.flags = ((sampleFlags & MediaExtractor.SAMPLE_FLAG_SYNC) != 0)
                             ? MediaCodec.BUFFER_FLAG_KEY_FRAME
@@ -485,9 +556,11 @@ public final class VideoCompressor {
                 }
             }
             if (muxer != null) {
-                try {
-                    muxer.stop();
-                } catch (Exception ignored) {
+                if (muxerStarted) {
+                    try {
+                        muxer.stop();
+                    } catch (Exception ignored) {
+                    }
                 }
                 try {
                     muxer.release();

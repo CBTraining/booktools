@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -31,8 +32,8 @@ import java.util.zip.ZipOutputStream;
  *
  * Performs a two-tier extraction into a single .zip archive in Downloads:
  *  1. Direct Embedded Image Stream Extraction: Scans the PDF binary for "/Subtype /Image"
- *     objects and extracts raw embedded JPEG (/DCTDecode), JPEG2000 (/JPXDecode), and
- *     zlib-compressed RGB/Grayscale (/FlateDecode) images without recompression loss.
+ *     objects and extracts raw embedded JPEG (/DCTDecode) and zlib-compressed RGB/Grayscale
+ *     (/FlateDecode) images without recompression loss.
  *  2. High-Resolution Page Rendering via Android's native PdfRenderer: Renders every page
  *     at 2x print quality into PNGs inside the ZIP so scanned PDFs, vector diagrams, and
  *     composite figures are always captured 100% intact.
@@ -135,20 +136,24 @@ public final class PdfImagesToZipExtractor {
 
                 mainHandler.post(() -> callback.onPdfInspected(meta.displayName, meta.sizeBytes, pageCount));
 
-                // Read raw PDF bytes if reasonably sized (<= 80 MB) to extract original embedded image XObjects
+                // Read raw PDF bytes only if safely within heap budget (<= 24 MB & <= maxMemory/6)
+                // so Android 17 MemoryLimiter / ART heap never OOMs on large PDFs.
+                long maxScanBytes = Math.min(24L * 1024L * 1024L, Runtime.getRuntime().maxMemory() / 6L);
                 byte[] rawPdfBytes = null;
-                if (meta.sizeBytes <= 80L * 1024L * 1024L) {
+                if (meta.sizeBytes <= maxScanBytes) {
                     try (InputStream in = appContext.getContentResolver().openInputStream(pdfUri)) {
                         if (in != null) {
-                            ByteArrayOutputStream baos = new ByteArrayOutputStream(
-                                    meta.sizeBytes > 0 ? (int) Math.min(meta.sizeBytes, 32 * 1024 * 1024) : 512 * 1024
-                            );
+                            int initCap = meta.sizeBytes > 0
+                                    ? (int) Math.min(meta.sizeBytes, maxScanBytes)
+                                    : 512 * 1024;
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream(initCap);
                             byte[] buf = new byte[64 * 1024];
                             int n;
                             long total = 0;
                             while ((n = in.read(buf)) != -1) {
+                                if (cancelFlag.get()) return;
                                 total += n;
-                                if (total > 80L * 1024L * 1024L) {
+                                if (total > maxScanBytes) {
                                     baos = null;
                                     break;
                                 }
@@ -158,7 +163,8 @@ public final class PdfImagesToZipExtractor {
                                 rawPdfBytes = baos.toByteArray();
                             }
                         }
-                    } catch (Exception ignored) {
+                    } catch (Throwable ignored) {
+                        rawPdfBytes = null;
                     }
                 }
 
@@ -174,7 +180,7 @@ public final class PdfImagesToZipExtractor {
                             ZipOutputStream zos = new ZipOutputStream(rawOut);
                             zos.setLevel(Deflater.DEFAULT_COMPRESSION);
 
-                            // Step 1: Extract raw embedded JPEG / JPX / Flate image XObjects if present
+                            // Step 1: Extract raw embedded JPEG / Flate image XObjects if present
                             if (pdfBytesForScan != null && !cancelFlag.get()) {
                                 mainHandler.post(() -> callback.onProgress(12, "Scanning PDF for embedded images..."));
                                 counts[0] = extractEmbeddedImagesIntoZip(
@@ -190,71 +196,76 @@ public final class PdfImagesToZipExtractor {
                             // Step 2: Render every page at high resolution into PNGs inside the ZIP
                             Bitmap reusablePageBmp = null;
                             Canvas reusableCanvas = null;
-
-                            for (int i = 0; i < pageCount; i++) {
-                                if (cancelFlag.get()) {
-                                    break;
-                                }
-                                final int pageNum = i + 1;
-                                final int pct = 25 + (int) Math.round(((i + 0.5) / pageCount) * 72.0);
-                                mainHandler.post(() -> callback.onProgress(
-                                        Math.min(97, pct),
-                                        "Extracting page " + pageNum + " of " + pageCount + " to ZIP..."
-                                ));
-
-                                PdfRenderer.Page page = activeRenderer.openPage(i);
-                                try {
-                                    int ptW = Math.max(1, page.getWidth());
-                                    int ptH = Math.max(1, page.getHeight());
-                                    // Scale 2.0x (144 DPI) capped at MAX_PAGE_RENDER_DIMENSION
-                                    double scale = 2.0;
-                                    int maxPt = Math.max(ptW, ptH);
-                                    if (maxPt * scale > MAX_PAGE_RENDER_DIMENSION) {
-                                        scale = (double) MAX_PAGE_RENDER_DIMENSION / (double) maxPt;
+                            try {
+                                for (int i = 0; i < pageCount; i++) {
+                                    if (cancelFlag.get()) {
+                                        throw new CancellationException("Cancelled");
                                     }
-                                    int bmpW = Math.max(1, (int) Math.round(ptW * scale));
-                                    int bmpH = Math.max(1, (int) Math.round(ptH * scale));
+                                    final int pageNum = i + 1;
+                                    final int pct = 25 + (int) Math.round(((i + 0.5) / pageCount) * 72.0);
+                                    mainHandler.post(() -> callback.onProgress(
+                                            Math.min(97, pct),
+                                            "Extracting page " + pageNum + " of " + pageCount + " to ZIP..."
+                                    ));
 
-                                    if (reusablePageBmp == null
-                                            || reusablePageBmp.getWidth() != bmpW
-                                            || reusablePageBmp.getHeight() != bmpH) {
-                                        if (reusablePageBmp != null && !reusablePageBmp.isRecycled()) {
-                                            reusablePageBmp.recycle();
+                                    PdfRenderer.Page page = activeRenderer.openPage(i);
+                                    try {
+                                        int ptW = Math.max(1, page.getWidth());
+                                        int ptH = Math.max(1, page.getHeight());
+                                        // Scale 2.0x (144 DPI) capped at MAX_PAGE_RENDER_DIMENSION
+                                        double scale = 2.0;
+                                        int maxPt = Math.max(ptW, ptH);
+                                        if (maxPt * scale > MAX_PAGE_RENDER_DIMENSION) {
+                                            scale = (double) MAX_PAGE_RENDER_DIMENSION / (double) maxPt;
                                         }
-                                        reusablePageBmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
-                                        reusableCanvas = new Canvas(reusablePageBmp);
+                                        int bmpW = Math.max(1, (int) Math.round(ptW * scale));
+                                        int bmpH = Math.max(1, (int) Math.round(ptH * scale));
+
+                                        if (reusablePageBmp == null
+                                                || reusablePageBmp.getWidth() != bmpW
+                                                || reusablePageBmp.getHeight() != bmpH) {
+                                            if (reusablePageBmp != null && !reusablePageBmp.isRecycled()) {
+                                                reusablePageBmp.recycle();
+                                            }
+                                            reusablePageBmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888);
+                                            reusableCanvas = new Canvas(reusablePageBmp);
+                                        }
+
+                                        // Fill crisp white page background before rendering PDF content
+                                        reusableCanvas.drawColor(Color.WHITE);
+                                        page.render(
+                                                reusablePageBmp,
+                                                null,
+                                                null,
+                                                PdfRenderer.Page.RENDER_MODE_FOR_PRINT
+                                        );
+
+                                        String entryName = String.format(
+                                                Locale.US,
+                                                "pages/%s_page_%03d.png",
+                                                baseName,
+                                                pageNum
+                                        );
+                                        ZipEntry entry = new ZipEntry(entryName);
+                                        zos.putNextEntry(entry);
+                                        reusablePageBmp.compress(Bitmap.CompressFormat.PNG, 100, zos);
+                                        zos.closeEntry();
+                                        counts[1]++;
+                                    } finally {
+                                        page.close();
                                     }
+                                }
 
-                                    // Fill crisp white page background before rendering PDF content
-                                    reusableCanvas.drawColor(Color.WHITE);
-                                    page.render(
-                                            reusablePageBmp,
-                                            null,
-                                            null,
-                                            PdfRenderer.Page.RENDER_MODE_FOR_PRINT
-                                    );
-
-                                    String entryName = String.format(
-                                            Locale.US,
-                                            "pages/%s_page_%03d.png",
-                                            baseName,
-                                            pageNum
-                                    );
-                                    ZipEntry entry = new ZipEntry(entryName);
-                                    zos.putNextEntry(entry);
-                                    reusablePageBmp.compress(Bitmap.CompressFormat.PNG, 100, zos);
-                                    zos.closeEntry();
-                                    counts[1]++;
-                                } finally {
-                                    page.close();
+                                if (cancelFlag.get()) {
+                                    throw new CancellationException("Cancelled");
+                                }
+                                zos.finish();
+                                zos.flush();
+                            } finally {
+                                if (reusablePageBmp != null && !reusablePageBmp.isRecycled()) {
+                                    reusablePageBmp.recycle();
                                 }
                             }
-
-                            if (reusablePageBmp != null && !reusablePageBmp.isRecycled()) {
-                                reusablePageBmp.recycle();
-                            }
-                            zos.finish();
-                            zos.flush();
                         }
                 );
 
@@ -272,9 +283,17 @@ public final class PdfImagesToZipExtractor {
                         counts[1]
                 );
                 mainHandler.post(() -> callback.onSuccess(result));
-            } catch (Exception e) {
+            } catch (CancellationException ignored) {
+                // MediaToolUtils.saveStreamToDownloads automatically deleted the incomplete ZIP entry
+            } catch (SecurityException se) {
                 if (!cancelFlag.get()) {
-                    final String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    mainHandler.post(() -> callback.onError("This PDF is password-protected or cannot be accessed."));
+                }
+            } catch (Throwable e) {
+                if (!cancelFlag.get()) {
+                    final String msg = (e instanceof OutOfMemoryError)
+                            ? "PDF page is too large for available memory."
+                            : (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                     mainHandler.post(() -> callback.onError(msg));
                 }
             } finally {
@@ -418,7 +437,7 @@ public final class PdfImagesToZipExtractor {
                                 "Extracted " + c + " embedded image(s) from PDF..."
                         ));
                     }
-                } catch (Exception ignored) {
+                } catch (Throwable ignored) {
                 }
             }
 
